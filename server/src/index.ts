@@ -743,6 +743,16 @@ function contestantCondition(participant: typeof participants.$inferSelect) {
   return `${who} is alert, mobile and ready to push the survival objective forward`;
 }
 
+function parseParticipantIds(value: string | null) {
+  if (!value) return [] as number[];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map(Number).filter(Number.isInteger) : [];
+  } catch {
+    return [];
+  }
+}
+
 function escapeForRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -1508,6 +1518,8 @@ const app = new Hono()
       duration_seconds: clip.duration_seconds,
       channel: clip.channel,
       channel_participant_id: clip.channel_participant_id,
+      participant_ids: parseParticipantIds(clip.participant_ids),
+      source_generation_id: clip.source_generation_id,
       summary: clip.summary,
       // One stable address per clip. A presigned URL changes on every poll, and a changed <video> src
       // makes the browser drop the decoded picture and reload — the player would black out and restart.
@@ -1830,6 +1842,25 @@ const app = new Hono()
       eq(participants.match_id, match.id),
       isNotNull(participants.character_draft_id),
     ));
+
+    // Opting to continue from a clip you were written into: that frame already holds both people in
+    // one real composition, which no amount of identity-lock text can reproduce.
+    const linkFromId = Number(data.linkFromGenerationId);
+    let linkedOpeningS3Uri: string | null = null;
+    let linkedSourceId: number | null = null;
+    if (Number.isInteger(linkFromId) && linkFromId > 0) {
+      const [linked] = await db.select().from(generations).where(eq(generations.id, linkFromId)).limit(1);
+      const linkedIds = parseParticipantIds(linked?.participant_ids ?? null);
+      const usable = linked
+        && linked.match_id === match.id
+        && linked.stage === "completed"
+        && Boolean(linked.thumbnail_url)
+        && linkedIds.includes(participant.id)
+        && linked.channel_participant_id !== participant.id;
+      if (!usable) return c.json({ error: "这一段不能作为你的起始画面" }, 400);
+      linkedOpeningS3Uri = linked!.thumbnail_url;
+      linkedSourceId = linked!.id;
+    }
     // MiniMax takes at most 3 people, and the channel owner always holds one of those slots.
     const guests = mentionedParticipants(viewerPrompt, roster, participant.id).slice(0, 2);
     const latestClip = await latestChannelClip(match.id, "participant", participant.id);
@@ -1845,6 +1876,16 @@ const app = new Hono()
       hunger: clamp(participant.hunger + 4),
       score: participant.score + 20,
     }).where(eq(participants.id, participant.id));
+    for (const guest of guests) {
+      await db.insert(matchEvents).values({
+        match_id: participant.match_id,
+        participant_id: guest.id,
+        round: match.current_round,
+        kind: "danger",
+        title: `${guest.display_name} 被拉进了画面`,
+        detail: `${participant.display_name} 把 ${guest.display_name} 写进了这一段。片段生成后，${guest.display_name} 可以在输入框里用 / 接着这一帧往下拍。`,
+      });
+    }
     await db.insert(matchEvents).values({
       match_id: participant.match_id,
       participant_id: participant.id,
@@ -1860,6 +1901,8 @@ const app = new Hono()
         channel: "participant",
         channelParticipantId: participant.id,
         participantIds: [participant.id, ...guests.map((item) => item.id)],
+        openingFrameS3Uri: linkedOpeningS3Uri,
+        sourceGenerationId: linkedSourceId,
         viewerPrompt,
         keyframePrompt,
         videoPrompt,

@@ -42,6 +42,10 @@ export interface BroadcastClip {
   duration_seconds: number;
   channel: ClipChannel;
   channel_participant_id: number | null;
+  /** Everyone written into this clip, including guests pulled in with @mentions. */
+  participant_ids: number[];
+  /** The clip this one took its opening frame from, if any. */
+  source_generation_id: number | null;
   summary: string | null;
   result_url: string | null;
   has_tail_frame: boolean;
@@ -77,6 +81,13 @@ export interface LiveData {
   /** Contestant clips whose tail frame nobody has captured yet; the browser harvests these. */
   tail_frame_wanted: number[];
   generated_at: string;
+}
+
+/** A clip someone else made that wrote you in, offered as an opening frame for your next one. */
+export interface LinkOffer {
+  id: number;
+  fromName: string;
+  summary: string | null;
 }
 
 export interface PlayerControl {

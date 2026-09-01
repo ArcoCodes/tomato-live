@@ -8,7 +8,7 @@ import { Roster } from "@/components/Roster";
 import { useAuth } from "@/hooks/useAuth";
 import { useTailFrameHarvester } from "@/hooks/useTailFrameHarvester";
 import { client } from "@/lib/edgespark";
-import type { BroadcastClip, LiveData, PlayerControl } from "@/types/live";
+import type { BroadcastClip, LinkOffer, LiveData, PlayerControl } from "@/types/live";
 
 const DIRECTOR_CHANNEL = "director";
 
@@ -119,6 +119,29 @@ function App() {
     return tabs;
   }, [live]);
 
+  // Clips made by someone else that wrote me in, still carrying an unused tail frame. That frame holds
+  // both contestants in one real composition — the only way two people share a scene on H3-Max.
+  const linkOffers = useMemo<LinkOffer[]>(() => {
+    const mine = control?.participantId;
+    if (!live || mine == null) return [];
+    const consumed = new Set(live.clips
+      .filter((clip) => clip.channel_participant_id === mine && clip.source_generation_id != null)
+      .map((clip) => clip.source_generation_id!));
+    const newestByAuthor = new Map<number, BroadcastClip>();
+    // live.clips arrives newest-first, so the first hit per author is the one that supersedes the rest.
+    for (const clip of live.clips) {
+      const author = clip.channel_participant_id;
+      if (clip.channel !== "participant" || author == null || author === mine) continue;
+      if (!clip.participant_ids.includes(mine) || !clip.has_tail_frame || consumed.has(clip.id)) continue;
+      if (!newestByAuthor.has(author)) newestByAuthor.set(author, clip);
+    }
+    return [...newestByAuthor.entries()].map(([author, clip]) => ({
+      id: clip.id,
+      fromName: live.participants.find((item) => item.id === author)?.display_name ?? "其他选手",
+      summary: clip.summary,
+    }));
+  }, [control?.participantId, live]);
+
   const channelClips = useMemo(
     () => (live?.clips ?? []).filter((clip) => channelKeyFor(clip) === activeChannel),
     [activeChannel, live?.clips],
@@ -187,6 +210,7 @@ function App() {
         <ActionBar
           participant={myParticipant}
           roster={live.participants}
+          linkOffers={linkOffers}
           control={control}
           choices={live.story_choices}
           pendingGeneration={(live.pending_generations ?? []).find((item) => item.channel_participant_id === myParticipant.id) ?? null}
