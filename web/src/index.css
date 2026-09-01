@@ -131,13 +131,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .sound-toggle.is-live { background: var(--brand); color: #fff; }
 .scan-lines { pointer-events: none; position: absolute; inset: 0; opacity: .08; background: repeating-linear-gradient(180deg, transparent 0 3px, rgba(0,0,0,.5) 4px); mix-blend-mode: multiply; }
 .channel-bar { flex: none; display: flex; gap: 6px; padding: 8px; overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--sh-1); }
-.channel-bar button { min-width: 148px; padding: 7px 12px 7px 7px; border: 1px solid transparent; border-radius: var(--r-md); background: var(--surface-2); color: var(--muted); text-align: left; cursor: pointer; display: flex; align-items: center; gap: 9px; transition: border-color .16s ease, background .16s ease, color .16s ease; }
+.channel-bar button { min-width: 152px; padding: 7px 12px 7px 7px; border: 1px solid transparent; border-radius: var(--r-md); background: var(--surface-2); color: var(--muted); text-align: left; cursor: pointer; display: flex; align-items: center; gap: 9px; transition: border-color .16s ease, background .16s ease, color .16s ease; }
 .channel-bar button:hover { background: var(--surface-3); color: var(--text); }
 .channel-bar button.active { background: var(--brand-soft); border-color: rgba(230,75,34,.32); color: var(--text); }
 .channel-thumb { flex: none; width: 40px; height: 40px; border-radius: var(--r-sm); overflow: hidden; background: var(--surface-3); display: grid; place-items: center; box-shadow: 0 0 0 1px var(--line); }
 .channel-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-/* A transparent mascot, not a photo: show all of it and let the tab show through. */
-.channel-thumb.is-mark { background: transparent; box-shadow: none; }
+/* A transparent mascot, not a photo: show all of it and let the tab show through. The tile goes
+   wide to match the artwork's 1.46 ratio, so nothing is cropped and nothing is letterboxed. */
+.channel-thumb.is-mark { width: 58px; background: transparent; box-shadow: none; }
 .channel-thumb.is-mark img { object-fit: contain; }
 .channel-thumb.is-pending { box-shadow: 0 0 0 2px var(--brand); animation: soft-pulse 1.5s ease infinite; }
 .channel-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
