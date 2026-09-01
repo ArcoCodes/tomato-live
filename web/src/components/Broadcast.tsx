@@ -44,8 +44,10 @@ export interface ChannelTab {
   label: string;
   detail: string;
   pending: boolean;
-  /** The contestant's character sheet; null for the director channel. */
+  /** The contestant's character sheet, or the director mascot. */
   avatarUrl: string | null;
+  /** A transparent mascot rather than a photo, so it needs a backing tint. */
+  isMark?: boolean;
 }
 
 export function Broadcast({ clips, channels, activeChannel, onSelectChannel }: {
@@ -392,7 +394,7 @@ export function Broadcast({ clips, channels, activeChannel, onSelectChannel }: {
             className={item.key === activeChannel ? "active" : ""}
             onClick={() => onSelectChannel(item.key)}
           >
-            <span className={`channel-thumb${item.avatarUrl ? "" : " is-director"}${item.pending ? " is-pending" : ""}`}>
+            <span className={`channel-thumb${item.isMark ? " is-mark" : ""}${item.pending ? " is-pending" : ""}`}>
               {item.avatarUrl ? <img src={item.avatarUrl} alt="" /> : <i />}
             </span>
             <span className="channel-copy">

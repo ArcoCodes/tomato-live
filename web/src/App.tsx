@@ -166,6 +166,7 @@ function App() {
       detail: directorCount ? `${directorCount} 段串播` : "等待素材",
       pending: pending.some((item) => item.channel === "director"),
       avatarUrl: "/director.png",
+      isMark: true,
     }];
     for (const participant of live.participants) {
       const count = live.clips.filter((clip) => clip.channel_participant_id === participant.id).length;
