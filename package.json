@@ -1,0 +1,7 @@
+{
+  "name": "tomato-live",
+  "private": true,
+  "devDependencies": {
+    "ffmpeg-static": "^5.3.0"
+  }
+}

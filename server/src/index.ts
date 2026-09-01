@@ -1,0 +1,1962 @@
+import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
+import { Hono } from "hono";
+import { db, secret, storage, vars } from "edgespark";
+import { auth } from "edgespark/http";
+import { buckets, characterDrafts, generations, matchEvents, matches, participants } from "@defs";
+
+const LIVE_SLUG = "island-zero";
+const RENOISE_DEFAULT_BASE_URL = "https://www.renoise.ai/api/public/v1";
+const MINIMAX_DEFAULT_BASE_URL = "https://api.minimax.io";
+const CHARACTER_MODEL = "image-01";
+// The character sheet doubles as the opening frame of that contestant's channel, and MiniMax takes
+// the video ratio from the input image (`ratio` is ignored for image-to-video), so it must be 16:9.
+const CHARACTER_RATIO = "16:9";
+const CHARACTER_RESOLUTION = "1366x768";
+const LIVE_VIDEO_MODEL = "MiniMax-H3-Max";
+const LEGACY_LIVE_VIDEO_MODEL = "hailuo-h3-max";
+const LIVE_VIDEO_RESOLUTION = "480P";
+const LIVE_VIDEO_DURATION_SECONDS = 10;
+const CHARACTER_RATE_LIMIT_PER_HOUR = 3;
+const DIRECTOR_RATE_LIMIT_PER_HOUR = 6;
+const ACCENTS = ["#d8ff4f", "#ff7448", "#7ec8ff", "#f4c06a", "#c7a7ff"];
+const LIVE_PROMPT_VERSION = "channel-v3";
+// Older clips still carry usable visual memory, so they stay readable as continuity sources.
+const CONTINUABLE_PROMPT_VERSIONS = new Set(["textless-v2", LIVE_PROMPT_VERSION]);
+const MAX_CONCURRENT_GENERATIONS = 3;
+const VIEWER_PROMPT_MAX_CHARS = 300;
+const TAIL_FRAME_MAX_BYTES = 4 * 1024 * 1024;
+const SUMMARY_MODEL = "MiniMax-M2";
+const VISION_MODEL = "MiniMax-M3";
+const FIELD_AUDIO_PROMPT = "Audio: on-location sound only — wind, rain hitting fabric and rock, footsteps in mud, the contestant's breathing and effort. No music, no narration, no voice-over.";
+const DIRECTOR_AUDIO_PROMPT = "Audio: a calm English-speaking off-screen commentator narrates the situation in one or two short sentences, mixed over storm ambience. Broadcast commentary tone, spoken in English, no music, no other language.";
+const PACING_PROMPT = [
+  "Pacing: one continuous take, but never a static one.",
+  `Break the ${LIVE_VIDEO_DURATION_SECONDS} seconds into three escalating beats — a new physical action or a new complication roughly every ${Math.round(LIVE_VIDEO_DURATION_SECONDS / 3)} seconds. Never hold one pose or one framing for the whole clip.`,
+  "Camera: moving throughout — push in, track alongside, drop low, rise, swing to a new angle, rack focus. Change the framing at least twice.",
+].join("\n");
+const NO_SCREEN_TEXT_PROMPT = [
+  "ABSOLUTE VISUAL RULE: raw camera footage only.",
+  "No visible text anywhere in the image or video.",
+  "No subtitles, captions, labels, written language, HUD, UI overlay, scoreboard, stat panel, status bars, lower-third graphics, logos, watermarks, numbers or letters.",
+  "Do not imitate a TV broadcast graphic package or a game interface.",
+].join(" ");
+const STORY_CHOICE_BLUEPRINTS = [
+  {
+    id: "signal",
+    title: "追踪异常信号",
+    detail: "沿着断续电波深入雨林，可能发现补给，也可能撞上风暴前沿。",
+    action: "前往气象站",
+    cue: "the contestant follows a flickering emergency signal through wet jungle under rising wind",
+  },
+  {
+    id: "beacon",
+    title: "强修救援信标",
+    detail: "冒雨打开旧信标外壳，用最后的电量换一次可见坐标。",
+    action: "修复信标",
+    cue: "the contestant repairs a damaged rescue beacon as amber light pulses through heavy rain",
+  },
+  {
+    id: "shelter",
+    title: "抢建临时庇护",
+    detail: "用防水布和倒木搭出避风点，牺牲移动速度换生存窗口。",
+    action: "寻找遮蔽",
+    cue: "the contestant builds a low storm shelter from a tarp, branches and salvaged cord",
+  },
+  {
+    id: "supplies",
+    title: "搜刮沉船物资",
+    detail: "趁潮水退去冲向礁石边，抢回药包、绳索或未知箱体。",
+    action: "搜索物资",
+    cue: "the contestant searches a half-submerged wreck crate on sharp black rocks",
+  },
+  {
+    id: "team",
+    title: "支援同伴脱困",
+    detail: "放弃单人路线，去接应一个被困在泥坡下方的队友。",
+    action: "帮助队友",
+    cue: "the contestant helps another survivor climb out of a collapsing muddy ravine",
+  },
+  {
+    id: "recover",
+    title: "短暂停整观察",
+    detail: "压低身形躲在树根后恢复体力，同时观察下一次安全窗口。",
+    action: "原地休息",
+    cue: "the contestant rests under tangled tree roots while scanning the storm-lit shoreline",
+  },
+] as const;
+
+const VERIFIED_MODEL_FALLBACKS: Record<string, JsonObject> = {
+  "gpt-image-2": {
+    name: "gpt-image-2",
+    displayName: "GPT Image 2",
+    kind: "image",
+    resolutions: ["1k", "2k", "4k"],
+    defaultResolution: "1k",
+    aspectRatios: ["1:1", "3:2", "2:3", "3:4", "4:3", "16:9", "9:16", "21:9"],
+    defaultAspectRatio: "1:1",
+    materialRoles: ["reference_image"],
+  },
+  "hailuo-h3-max": {
+    name: "hailuo-h3-max",
+    displayName: "MiniMax H3 Max",
+    kind: "video",
+    resolutions: ["480p", "768p"],
+    defaultResolution: "768p",
+    aspectRatios: ["16:9", "21:9", "4:3", "1:1", "3:4", "9:16"],
+    defaultAspectRatio: "16:9",
+    durations: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    defaultDuration: 5,
+    materialRoles: ["first_frame", "last_frame"],
+  },
+};
+
+type JsonObject = Record<string, unknown>;
+
+const MD5_SHIFTS = [
+  7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+  5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+  4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+  6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+];
+
+const MD5_CONSTANTS = Array.from({ length: 64 }, (_, index) => (
+  Math.floor(Math.abs(Math.sin(index + 1)) * 2 ** 32) >>> 0
+));
+
+function asObject(value: unknown): JsonObject {
+  return value && typeof value === "object" ? value as JsonObject : {};
+}
+
+function clamp(value: number, min = 0, max = 100) {
+  return Math.max(min, Math.min(max, Math.round(value)));
+}
+
+function cleanText(value: unknown, maxLength: number) {
+  return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
+}
+
+async function sha256(value: string) {
+  const bytes = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function leftRotate32(value: number, shift: number) {
+  return ((value << shift) | (value >>> (32 - shift))) >>> 0;
+}
+
+function md5Hex(buffer: ArrayBuffer) {
+  const input = new Uint8Array(buffer);
+  const paddedLength = (input.length + 9 + 63) & ~63;
+  const bytes = new Uint8Array(paddedLength);
+  bytes.set(input);
+  bytes[input.length] = 0x80;
+
+  const bitLength = input.length * 8;
+  for (let index = 0; index < 8; index += 1) {
+    bytes[paddedLength - 8 + index] = Math.floor(bitLength / 2 ** (8 * index)) & 0xff;
+  }
+
+  let a0 = 0x67452301;
+  let b0 = 0xefcdab89;
+  let c0 = 0x98badcfe;
+  let d0 = 0x10325476;
+
+  for (let offset = 0; offset < paddedLength; offset += 64) {
+    const words = Array.from({ length: 16 }, (_, index) => {
+      const start = offset + index * 4;
+      return (
+        bytes[start]
+        | (bytes[start + 1] << 8)
+        | (bytes[start + 2] << 16)
+        | (bytes[start + 3] << 24)
+      ) >>> 0;
+    });
+    let a = a0;
+    let b = b0;
+    let c = c0;
+    let d = d0;
+    for (let index = 0; index < 64; index += 1) {
+      let f: number;
+      let g: number;
+      if (index < 16) {
+        f = (b & c) | (~b & d);
+        g = index;
+      } else if (index < 32) {
+        f = (d & b) | (~d & c);
+        g = (5 * index + 1) % 16;
+      } else if (index < 48) {
+        f = b ^ c ^ d;
+        g = (3 * index + 5) % 16;
+      } else {
+        f = c ^ (b | ~d);
+        g = (7 * index) % 16;
+      }
+      const nextD = d;
+      d = c;
+      c = b;
+      b = (b + leftRotate32((a + f + MD5_CONSTANTS[index] + words[g]) >>> 0, MD5_SHIFTS[index])) >>> 0;
+      a = nextD;
+    }
+    a0 = (a0 + a) >>> 0;
+    b0 = (b0 + b) >>> 0;
+    c0 = (c0 + c) >>> 0;
+    d0 = (d0 + d) >>> 0;
+  }
+
+  return [a0, b0, c0, d0].map((word) => (
+    [0, 8, 16, 24].map((shift) => ((word >>> shift) & 0xff).toString(16).padStart(2, "0")).join("")
+  )).join("");
+}
+
+async function ensureLiveMatch() {
+  await db.insert(matches).values({
+    slug: LIVE_SLUG,
+    title: "ISLAND / 00",
+    subtitle: "荒岛生存公开赛 · 第 01 季",
+    status: "live",
+    current_round: 7,
+    zone: "北岸雨林",
+    viewers: 12847,
+  }).onConflictDoNothing({ target: matches.slug });
+
+  const [match] = await db.select().from(matches).where(eq(matches.slug, LIVE_SLUG)).limit(1);
+  if (!match) throw new Error("Unable to initialize live match");
+
+  return match;
+}
+
+async function avatarUrl(s3Uri: string | null) {
+  if (!s3Uri) return null;
+  const parsed = storage.tryParseS3Uri(s3Uri);
+  if (!parsed) return s3Uri.startsWith("https://") ? s3Uri : null;
+  const signed = await storage.from(parsed.bucket).createPresignedGetUrl(parsed.path, 3600);
+  return signed.downloadUrl;
+}
+
+async function clipUrl(value: string | null) {
+  if (!value) return null;
+  const parsed = storage.tryParseS3Uri(value);
+  if (!parsed) return value.startsWith("https://") ? value : null;
+  const signed = await storage.from(parsed.bucket).createPresignedGetUrl(parsed.path, 3600);
+  return signed.downloadUrl;
+}
+
+function requireMiniMax() {
+  const apiKey = secret.get("MINIMAX_API_KEY");
+  if (!apiKey) throw new Error("MINIMAX_API_KEY is not configured");
+  return {
+    apiKey,
+    baseUrl: (vars.get("MINIMAX_API_BASE_URL") || MINIMAX_DEFAULT_BASE_URL).replace(/\/$/, ""),
+  };
+}
+
+function miniMaxErrorMessage(payload: unknown, status: number) {
+  const root = asObject(payload);
+  const error = asObject(root.error);
+  const baseResp = asObject(root.base_resp);
+  return (
+    cleanText(error.message, 500)
+    || cleanText(error.type, 200)
+    || cleanText(baseResp.status_msg, 500)
+    || `MiniMax request failed (${status})`
+  );
+}
+
+async function miniMaxFetch(path: string, init: RequestInit = {}) {
+  const { apiKey, baseUrl } = requireMiniMax();
+  const headers = new Headers(init.headers);
+  headers.set("Accept", "application/json");
+  headers.set("Authorization", `Bearer ${apiKey}`);
+  if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  const response = await fetch(`${baseUrl}${path}`, { ...init, headers });
+  const responseText = await response.text();
+  let payload: unknown = {};
+  try {
+    payload = responseText ? JSON.parse(responseText) : {};
+  } catch {
+    const contentType = response.headers.get("content-type") || "unknown";
+    const htmlHint = /<html|<!doctype/i.test(responseText) ? "，疑似返回了网页 HTML" : "";
+    throw new Error(`MiniMax ${path} 返回了无法解析的响应 (${response.status}, ${contentType}${htmlHint})`);
+  }
+  const baseResp = asObject(asObject(payload).base_resp);
+  const baseStatus = Number(baseResp.status_code);
+  if (!response.ok || (Number.isFinite(baseStatus) && baseStatus !== 0)) {
+    throw new Error(miniMaxErrorMessage(payload, response.status));
+  }
+  return payload;
+}
+
+async function miniMaxProbeRequest(path: string, init: RequestInit = {}) {
+  const { apiKey, baseUrl } = requireMiniMax();
+  const headers = new Headers(init.headers);
+  headers.set("Accept", "application/json");
+  headers.set("Authorization", `Bearer ${apiKey}`);
+  if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  const response = await fetch(`${baseUrl}${path}`, { ...init, headers });
+  const text = await response.text();
+  let json = false;
+  let keys: string[] = [];
+  try {
+    const parsed = JSON.parse(text);
+    json = true;
+    keys = Object.keys(asObject(parsed));
+  } catch {
+    json = false;
+  }
+  return {
+    path,
+    status: response.status,
+    contentType: response.headers.get("content-type"),
+    json,
+    keys,
+    looksLikeHtml: /<html|<!doctype/i.test(text),
+    preview: json ? null : text.slice(0, 80),
+  };
+}
+
+async function createMiniMaxCharacterImage(prompt: string, imageUrl: string) {
+  const payload = asObject(await miniMaxFetch("/v1/image_generation", {
+    method: "POST",
+    body: JSON.stringify({
+      model: CHARACTER_MODEL,
+      prompt: cleanText(prompt, 1500),
+      aspect_ratio: CHARACTER_RATIO,
+      subject_reference: [{ type: "character", image_file: imageUrl }],
+      response_format: "url",
+      prompt_optimizer: false,
+      n: 1,
+    }),
+  }));
+  const imageUrls = asObject(payload.data).image_urls;
+  const imageUrlResult = Array.isArray(imageUrls)
+    ? imageUrls.find((value): value is string => typeof value === "string" && value.startsWith("http"))
+    : null;
+  if (!imageUrlResult) throw new Error("MiniMax 角色图生成完成，但没有返回图片地址");
+  return {
+    id: cleanText(payload.id, 120) || crypto.randomUUID(),
+    url: imageUrlResult,
+  };
+}
+
+async function createMiniMaxVideoTask(prompt: string, firstFrameUrl: string, duration: number) {
+  const payload = asObject(await miniMaxFetch("/v2/video_generation", {
+    method: "POST",
+    body: JSON.stringify({
+      model: LIVE_VIDEO_MODEL,
+      content: [
+        { type: "text", text: cleanText(prompt, 6500) },
+        { type: "image_url", image_url: { url: firstFrameUrl }, role: "first_frame" },
+      ],
+      resolution: LIVE_VIDEO_RESOLUTION,
+      duration,
+      ratio: "adaptive",
+    }),
+  }));
+  const taskIdValue = payload.task_id;
+  if (typeof taskIdValue !== "string" && typeof taskIdValue !== "number") {
+    throw new Error("MiniMax 视频生成没有返回 task_id");
+  }
+  return { id: String(taskIdValue), raw: payload };
+}
+
+async function getMiniMaxVideoTask(id: string) {
+  return miniMaxFetch(`/v2/query/video_generation/${encodeURIComponent(id)}`);
+}
+
+function miniMaxVideoStatus(payload: unknown) {
+  return cleanText(asObject(asObject(payload).task).status, 32).toLowerCase();
+}
+
+function miniMaxVideoResultUrl(payload: unknown) {
+  const content = asObject(asObject(asObject(payload).task).content);
+  const url = content.url;
+  return typeof url === "string" && url.startsWith("http") ? url : null;
+}
+
+function requireRenoise() {
+  const apiKey = secret.get("RENOISE_API_KEY");
+  if (!apiKey) throw new Error("RENOISE_API_KEY is not configured");
+  return {
+    apiKey,
+    baseUrl: (vars.get("RENOISE_API_BASE_URL") || RENOISE_DEFAULT_BASE_URL).replace(/\/$/, ""),
+  };
+}
+
+async function renoiseFetch(path: string, init: RequestInit = {}) {
+  const { apiKey, baseUrl } = requireRenoise();
+  const headers = new Headers(init.headers);
+  headers.set("Accept", "application/json");
+  headers.set("X-API-Key", apiKey);
+  headers.set("X-Client-Name", "tomato-live");
+  headers.set("X-Client-Version", "1.0.0");
+  const proxyToken = vars.get("RENOISE_PROXY_TOKEN");
+  if (proxyToken) headers.set("X-Tomato-Proxy-Token", proxyToken);
+  const response = await fetch(`${baseUrl}${path}`, { ...init, headers });
+  const responseText = await response.text();
+  let payload: unknown = {};
+  try {
+    payload = responseText ? JSON.parse(responseText) : {};
+  } catch {
+    const contentType = response.headers.get("content-type") || "unknown";
+    const htmlHint = /<html|<!doctype/i.test(responseText) ? "，疑似返回了网页 HTML" : "";
+    throw new Error(`Renoise ${path} 返回了无法解析的响应 (${response.status}, ${contentType}${htmlHint})`);
+  }
+  if (!response.ok) {
+    const message = cleanText(asObject(payload).message, 500) || `Renoise request failed (${response.status})`;
+    throw new Error(message);
+  }
+  return payload;
+}
+
+async function renoiseProbeRequest(path: string, init: RequestInit = {}) {
+  const { apiKey, baseUrl } = requireRenoise();
+  const headers = new Headers(init.headers);
+  headers.set("Accept", "application/json");
+  headers.set("X-API-Key", apiKey);
+  headers.set("X-Client-Name", "tomato-live-probe");
+  headers.set("X-Client-Version", "1.0.0");
+  const proxyToken = vars.get("RENOISE_PROXY_TOKEN");
+  if (proxyToken) headers.set("X-Tomato-Proxy-Token", proxyToken);
+  const response = await fetch(`${baseUrl}${path}`, { ...init, headers });
+  const text = await response.text();
+  let json = false;
+  let keys: string[] = [];
+  try {
+    const parsed = JSON.parse(text);
+    json = true;
+    keys = Object.keys(asObject(parsed));
+  } catch {
+    json = false;
+  }
+  return {
+    path,
+    status: response.status,
+    contentType: response.headers.get("content-type"),
+    json,
+    keys,
+    looksLikeHtml: /<html|<!doctype/i.test(text),
+    preview: json ? null : text.slice(0, 80),
+  };
+}
+
+function findModelList(raw: unknown) {
+  const queue: Array<{ value: unknown; depth: number }> = [{ value: raw, depth: 0 }];
+  while (queue.length) {
+    const current = queue.shift();
+    if (!current) break;
+    if (typeof current.value === "string" && current.depth < 4 && /^[\s]*[\[{]/.test(current.value)) {
+      try {
+        queue.push({ value: JSON.parse(current.value), depth: current.depth + 1 });
+      } catch {
+        // Ignore non-JSON strings inside provider metadata.
+      }
+      continue;
+    }
+    if (Array.isArray(current.value)) {
+      const candidates = current.value.map(asObject);
+      if (candidates.some((candidate) => typeof (candidate.name ?? candidate.model ?? candidate.id) === "string")) {
+        return candidates;
+      }
+      if (current.depth < 4) current.value.forEach((value) => queue.push({ value, depth: current.depth + 1 }));
+      continue;
+    }
+    if (current.value && typeof current.value === "object" && current.depth < 4) {
+      Object.values(current.value).forEach((value) => queue.push({ value, depth: current.depth + 1 }));
+    }
+  }
+  return [];
+}
+
+function modelName(model: JsonObject) {
+  return cleanText(model.name ?? model.model ?? model.id, 120);
+}
+
+async function getRenoiseModels() {
+  const raw = await renoiseFetch("/models");
+  return findModelList(raw);
+}
+
+async function getRenoiseModel(name: string) {
+  try {
+    const models = await getRenoiseModels();
+    const model = models.find((candidate) => modelName(candidate) === name);
+    if (model) return model;
+  } catch {
+    // Some edge-to-edge routes return the Renoise HTML shell for /models.
+  }
+  const fallback = VERIFIED_MODEL_FALLBACKS[name];
+  if (fallback) return fallback;
+  throw new Error(`Renoise 当前没有提供模型 ${name}`);
+}
+
+async function getCharacterImageModel() {
+  let models: JsonObject[] = [];
+  try {
+    models = await getRenoiseModels();
+  } catch {
+    models = [];
+  }
+  const compatible = models.filter((candidate) => (
+    candidate.kind === "image"
+    && Array.isArray(candidate.materialRoles)
+    && candidate.materialRoles.includes("reference_image")
+  ));
+  const preferred = compatible.find((candidate) => modelName(candidate) === CHARACTER_MODEL);
+  const fallback = compatible.find((candidate) => candidate.isDefault === true) ?? compatible[0];
+  const selected = preferred ?? fallback;
+  return selected ?? VERIFIED_MODEL_FALLBACKS[CHARACTER_MODEL];
+}
+
+function pickAdvertised(values: unknown, preferred: string, fallback: unknown) {
+  const advertised = Array.isArray(values) ? values.filter((value): value is string => typeof value === "string") : [];
+  if (advertised.includes(preferred)) return preferred;
+  if (typeof fallback === "string" && advertised.includes(fallback)) return fallback;
+  return advertised[0];
+}
+
+function unwrapTask(payload: unknown) {
+  const root = asObject(payload);
+  const data = asObject(root.data);
+  if (root.task) return asObject(root.task);
+  if (data.task) return asObject(data.task);
+  return Object.keys(data).length ? data : root;
+}
+
+function taskId(payload: unknown) {
+  const task = unwrapTask(payload);
+  const id = task.id;
+  if (typeof id !== "number" && typeof id !== "string") throw new Error("Renoise response did not include a task id");
+  return String(id);
+}
+
+function taskStatus(payload: unknown) {
+  return cleanText(unwrapTask(payload).status, 32).toLowerCase();
+}
+
+function taskResultUrl(payload: unknown) {
+  const task = unwrapTask(payload);
+  const artifacts = asObject(task.artifacts);
+  const candidates = [task.resultUrl, task.result_url, task.url, artifacts.resultUrl, artifacts.videoUrl, artifacts.imageUrl];
+  return candidates.find((value): value is string => typeof value === "string" && value.startsWith("http")) ?? null;
+}
+
+function characterPrompt(archetype: string, accent: string) {
+  return [
+    "USE: identity-preserving cinematic survival-contestant character portrait.",
+    "SOURCE: the attached photo is the contestant identity reference.",
+    `SUBJECT: transform the same person into a ${archetype} prepared for a near-future tropical island survival broadcast.`,
+    `WARDROBE: practical weathered expedition gear with a restrained ${accent} identification accent, layered fabric, utility straps, no helmet, no mask.`,
+    "COMPOSITION: horizontal 16:9 establishing frame, the contestant full body from head to boots, standing slightly off-centre, hands visible, readable silhouette, room to breathe around the body.",
+    "SCENE/BACKGROUND: a rain-soaked tropical coast at dusk — wet rock, wind-bent palms, low storm cloud filling the rest of the frame; cinematic but the contestant stays the unmistakable subject.",
+    "LIGHTING/MATERIALS: documentary realism, overcast key light, warm field-lamp rim, tactile wet fabric and natural skin texture.",
+    "PRESERVE: facial identity, age, skin tone, ethnicity, hairstyle, distinctive facial features, and natural body proportions from the source photo.",
+    "CHANGE ONLY: wardrobe, pose, framing, and background needed for the survival-contestant design.",
+    NO_SCREEN_TEXT_PROMPT,
+    "AVOID: text, logos, UI, watermark, extra people, props covering the face, fantasy armor, exaggerated muscles, beauty-filter skin, face drift, cropped head, cropped feet.",
+  ].join("\n");
+}
+
+function requestFingerprint(c: { req: { header(name: string): string | undefined } }) {
+  return [
+    c.req.header("CF-Connecting-IP") || "local",
+    c.req.header("User-Agent") || "unknown",
+  ].join("|");
+}
+
+async function estimateRenoiseCredit(model: string, resolution: string) {
+  const query = new URLSearchParams({ model, duration: "5", resolution });
+  const payload = asObject(await renoiseFetch(`/credit/estimate?${query.toString()}`));
+  const data = asObject(payload.data);
+  const value = Number(payload.estimatedCredit ?? data.estimatedCredit);
+  if (!Number.isFinite(value)) throw new Error("Renoise 暂时无法返回角色生成额度预估");
+  return {
+    estimatedCredit: value,
+    sufficient: Boolean(payload.sufficient ?? data.sufficient),
+  };
+}
+
+async function createRenoiseTask(body: JsonObject) {
+  const response = await renoiseFetch("/tasks", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Idempotency-Key": crypto.randomUUID(),
+    },
+    body: JSON.stringify(body),
+  });
+  return { id: taskId(response), raw: response };
+}
+
+async function getRenoiseTask(id: string) {
+  const detail = await renoiseFetch(`/tasks/${encodeURIComponent(id)}`);
+  if (taskResultUrl(detail) || taskStatus(detail) !== "completed") return detail;
+  return renoiseFetch(`/tasks/${encodeURIComponent(id)}/result`);
+}
+
+function renoiseMaterialType(contentType: string) {
+  if (contentType.startsWith("video/")) return "video";
+  if (contentType.startsWith("audio/")) return "audio";
+  return "image";
+}
+
+async function uploadRenoiseMaterial(bytes: ArrayBuffer, filename: string, contentType = "image/jpeg") {
+  const type = renoiseMaterialType(contentType);
+  const uploadPayload = asObject(await renoiseFetch("/materials/upload-url", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ contentType, filename, type }),
+  }));
+  const uploadUrl = cleanText(uploadPayload.uploadUrl, 5000);
+  const storagePath = cleanText(uploadPayload.path, 5000);
+  if (!uploadUrl || !storagePath) throw new Error("Renoise material upload-url response is incomplete");
+
+  const uploadResponse = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: { "Content-Type": contentType },
+    body: bytes,
+  });
+  if (!uploadResponse.ok) throw new Error(`Renoise material file upload failed (${uploadResponse.status})`);
+
+  const payload = await renoiseFetch("/materials", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      storagePath,
+      contentType,
+      name: filename,
+      md5: md5Hex(bytes),
+      type,
+    }),
+  });
+  const root = asObject(payload);
+  const material = asObject(root.material ?? asObject(root.data).material ?? root.data);
+  const id = material.id ?? root.id;
+  const numericId = Number(id);
+  if (!Number.isInteger(numericId)) throw new Error("Renoise material upload did not return an id");
+  return numericId;
+}
+
+async function characterDraftPayload(draft: typeof characterDrafts.$inferSelect) {
+  return {
+    publicId: draft.public_id,
+    displayName: draft.display_name,
+    archetype: draft.archetype,
+    accent: draft.accent,
+    model: draft.model,
+    status: draft.status,
+    estimatedCredit: draft.estimated_credit ? Number(draft.estimated_credit) : null,
+    characterUrl: await avatarUrl(draft.generated_s3_uri),
+    error: draft.error_message,
+  };
+}
+
+async function getOwnedCharacterDraft(publicId: string, controlToken: string) {
+  const [draft] = await db.select().from(characterDrafts)
+    .where(eq(characterDrafts.public_id, publicId))
+    .limit(1);
+  if (!draft || !controlToken || draft.control_token_hash !== await sha256(controlToken)) return null;
+  return draft;
+}
+
+async function removeStoredSource(s3Uri: string | null) {
+  if (!s3Uri) return;
+  const parsed = storage.tryParseS3Uri(s3Uri);
+  if (!parsed) return;
+  await storage.from(parsed.bucket).delete([parsed.path]);
+}
+
+async function syncParticipantMaterial(participant: typeof participants.$inferSelect) {
+  if (participant.renoise_material_id) return participant.renoise_material_id;
+  if (!participant.avatar_s3_uri) throw new Error(`${participant.display_name} 还没有上传角色照片`);
+  const parsed = storage.tryParseS3Uri(participant.avatar_s3_uri);
+  if (!parsed) throw new Error(`${participant.display_name} 的角色照片地址无效`);
+  const object = await storage.from(parsed.bucket).get(parsed.path);
+  if (!object) throw new Error(`${participant.display_name} 的角色照片不存在`);
+  const materialId = await uploadRenoiseMaterial(
+    object.body,
+    `participant-${participant.id}.jpg`,
+    object.metadata.contentType || "image/jpeg",
+  );
+  await db.update(participants).set({ renoise_material_id: materialId }).where(eq(participants.id, participant.id));
+  return materialId;
+}
+
+function storyTextFromGeneration(generation: typeof generations.$inferSelect | null) {
+  if (!generation?.prompt) return "";
+  try {
+    const promptSet = asObject(JSON.parse(generation.prompt));
+    if (!CONTINUABLE_PROMPT_VERSIONS.has(String(promptSet.promptVersion))) return "";
+    return cleanText(promptSet.visualMemory ?? promptSet.videoPrompt ?? promptSet.keyframePrompt, 800);
+  } catch {
+    return "";
+  }
+}
+
+// One contestant channel per participant; the director channel carries channel_participant_id = null.
+function channelFilter(matchId: number, channel: "director" | "participant", participantId: number | null) {
+  return and(
+    eq(generations.match_id, matchId),
+    eq(generations.channel, channel),
+    participantId == null
+      ? isNull(generations.channel_participant_id)
+      : eq(generations.channel_participant_id, participantId),
+  );
+}
+
+async function latestChannelClip(matchId: number, channel: "director" | "participant", participantId: number | null) {
+  const [clip] = await db.select().from(generations)
+    .where(and(channelFilter(matchId, channel, participantId), eq(generations.stage, "completed")))
+    .orderBy(desc(generations.id))
+    .limit(1);
+  return clip ?? null;
+}
+
+async function activeGenerations(matchId: number) {
+  return db.select().from(generations)
+    .where(and(eq(generations.match_id, matchId), inArray(generations.stage, ["queued", "keyframe", "video"])))
+    .orderBy(desc(generations.id));
+}
+
+// A busy channel blocks only itself; the global cap is what keeps concurrent spend bounded.
+function generationSlotError(
+  active: Array<typeof generations.$inferSelect>,
+  channel: "director" | "participant",
+  participantId: number | null,
+) {
+  const sameChannel = active.find((item) =>
+    item.channel === channel && (item.channel_participant_id ?? null) === participantId);
+  if (sameChannel) {
+    return { status: 409 as const, error: "这条通道上一段还在生成中，等它进入直播队列后再继续", generation: sameChannel };
+  }
+  if (active.length >= MAX_CONCURRENT_GENERATIONS) {
+    return { status: 429 as const, error: "同时生成的片段已达上限，稍后再试", generation: null };
+  }
+  return null;
+}
+
+function contestantCondition(participant: typeof participants.$inferSelect) {
+  const who = participant.display_name;
+  if (participant.hunger >= 65) return `${who} is hungry and urgent, taking riskier movements`;
+  if (participant.stamina <= 35) return `${who} is tired, moving carefully and conserving energy`;
+  if (participant.health <= 45) return `${who} is injured but still determined, favoring cautious physical action`;
+  return `${who} is alert, mobile and ready to push the survival objective forward`;
+}
+
+function escapeForRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Viewers pull other contestants into their shot by writing @name. H3-Max takes only one opening
+// frame, so a guest can only enter through their identity-lock text — which is exactly what we have.
+function mentionedParticipants(viewerPrompt: string, roster: Array<typeof participants.$inferSelect>, selfId: number) {
+  return roster.filter((item) => item.id !== selfId
+    && item.status !== "eliminated"
+    && new RegExp(`@\\s*${escapeForRegExp(item.display_name)}`, "i").test(viewerPrompt));
+}
+
+function buildStoryChoices(
+  match: typeof matches.$inferSelect,
+  roster: Array<typeof participants.$inferSelect>,
+  events: Array<typeof matchEvents.$inferSelect>,
+  latestClip: typeof generations.$inferSelect | null,
+) {
+  if (roster.length === 0) return [];
+  const latestStory = cleanText(latestClip?.summary, 200);
+  const recentEvent = events.find((event) => event.kind === "player") ?? events[0];
+  return STORY_CHOICE_BLUEPRINTS.map((choice, index) => {
+    const lead = roster[index % roster.length];
+    const pressure = lead.hunger > 65
+      ? "饥饿值偏高，选择会更冒险"
+      : lead.stamina < 35 ? "体力偏低，动作会更克制" : "状态仍可继续推进";
+    return {
+      id: choice.id,
+      title: choice.title,
+      detail: latestStory
+        ? `${choice.detail} 当前局势：${latestStory.slice(0, 40)}…`
+        : choice.detail,
+      participantHint: `${lead.display_name} · ${pressure}`,
+      round: match.current_round,
+      recentEvent: recentEvent?.title ?? null,
+    };
+  });
+}
+
+function storyChoiceById(choiceId: string) {
+  return STORY_CHOICE_BLUEPRINTS.find((choice) => choice.id === choiceId) ?? null;
+}
+
+// Shared text-model helper. Every caller must treat failure as non-fatal: a missing summary or an
+// un-translated viewer line is never a reason to block video generation.
+async function miniMaxChat(system: string, user: string, maxTokens: number) {
+  const payload = asObject(await miniMaxFetch("/v1/text/chatcompletion_v2", {
+    method: "POST",
+    body: JSON.stringify({
+      model: SUMMARY_MODEL,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+      max_tokens: maxTokens,
+      temperature: 0.7,
+    }),
+  }));
+  const choices = Array.isArray(payload.choices) ? payload.choices : [];
+  const message = asObject(asObject(choices[0]).message);
+  return cleanText(message.content, 800);
+}
+
+// The viewer writes in whatever language they like; the video prompt reads better as one English
+// action line. If the model is unavailable we pass the original text straight through.
+// Viewers type one short line. That alone yields a flat clip, so the model expands it into a real
+// shot design with beats before it ever reaches the video model.
+async function expandViewerPrompt(
+  viewerPrompt: string,
+  condition: string,
+  previousStory: string,
+  lead: string,
+  guests: string[],
+) {
+  const beatSeconds = Math.round(LIVE_VIDEO_DURATION_SECONDS / 3);
+  const cast = guests.length
+    ? `${lead} plus ${guests.join(" and ")}`
+    : lead;
+  try {
+    const shot = await miniMaxChat(
+      [
+        "You are the shot designer on a gritty documentary-style survival reality show.",
+        `Turn the viewer's instruction into a rich English video-generation prompt for one ${LIVE_VIDEO_DURATION_SECONDS}-second clip.`,
+        "Rules:",
+        `- It is ONE continuous take with no cuts, but it must never be static. Break it into three escalating beats, roughly ${beatSeconds} seconds each, and write them as "0-${beatSeconds}s: ...".`,
+        "- Every beat is a NEW physical action or a NEW complication — something gives way, slips, tears, floods, catches. Never the same pose held throughout.",
+        "- Keep the camera moving the whole time and change the framing at least twice.",
+        "- Write concrete physical detail: what the hands grip, what slips, what splashes, what the wind and rain do.",
+        `- The people in this shot are: ${cast}. Call them by these exact names throughout — never "the contestant" or "a survivor".`,
+        guests.length
+          ? `- ${guests.join(" and ")} appear alongside ${lead}; give them their own physical actions, do not leave them standing idle. No one outside this list appears.`
+          : `- ${lead} is the only person in frame. No new people.`,
+        "- Keep every named person's identity, wardrobe and location unchanged.",
+        "- End with one line starting 'Audio:' describing on-location sound only — no music, no narration.",
+        "- No on-screen text, subtitles, captions or graphics anywhere.",
+        "- Write the entire prompt in English, including any spoken line, even when the viewer wrote in Chinese or another language. No Chinese characters anywhere in your output.",
+        "Output only the prompt itself, no preamble and no headings.",
+      ].join("\n"),
+      [
+        previousStory ? `Previous clip ended with: ${previousStory}` : `This opens ${lead}'s storyline.`,
+        `Condition: ${condition}`,
+        guests.length ? `Also in this shot: ${guests.join(", ")}` : "",
+        `Viewer instruction (the "@name" marks are mentions of other contestants): ${viewerPrompt}`,
+      ].filter(Boolean).join("\n"),
+      900,
+    );
+    return shot || "";
+  } catch {
+    return "";
+  }
+}
+
+async function promptsForViewerInput({
+  viewerPrompt,
+  participant,
+  guests,
+  latestClip,
+}: {
+  viewerPrompt: string;
+  participant: typeof participants.$inferSelect;
+  guests: Array<typeof participants.$inferSelect>;
+  latestClip: typeof generations.$inferSelect | null;
+}) {
+  const previousStory = storyTextFromGeneration(latestClip);
+  const condition = contestantCondition(participant);
+  const guestNames = guests.map((item) => item.display_name);
+  const expanded = await expandViewerPrompt(viewerPrompt, condition, previousStory, participant.display_name, guestNames);
+  const cue = viewerPrompt;
+  const sharedContinuity = [
+    previousStory ? `Continue from this clean visual memory: ${previousStory}.` : "Opening situation: a lone survival contestant is on a rain-soaked remote coast as a storm approaches.",
+    `Branch action: ${cue}.`,
+    `Physical condition: ${condition}.`,
+  ].join("\n");
+  // storyTextFromGeneration feeds this straight into the next clip's English prompt, so it must be
+  // the expanded English text — never the viewer's raw line.
+  const memorySource = expanded
+    ? cleanText(expanded, 600)
+    : `${participant.display_name} — ${cue}`;
+  return {
+    cue,
+    visualMemory: `${memorySource}; ${condition}; stormy remote coast; documentary handheld realism; no on-screen graphics`,
+    keyframePrompt: [
+      "Create a cinematic 16:9 opening frame for a survival challenge using the supplied contestant reference image.",
+      sharedContinuity,
+      `Frame: the supplied contestant is visibly starting this branch: ${cue}.`,
+      "Composition: documentary survival camera, grounded realism, wet fabric, muddy skin, readable face, tense body language, tropical storm atmosphere, no duplicate person.",
+      "Preserve the contestant identity, age, face, hairstyle, ethnicity, body proportions and outfit continuity from the reference.",
+      NO_SCREEN_TEXT_PROMPT,
+    ].join("\n"),
+    videoPrompt: [
+      `Continue the survival challenge for exactly ${LIVE_VIDEO_DURATION_SECONDS} seconds.`,
+      sharedContinuity,
+      // The expanded shot design already carries beats, camera moves and audio; the template is only
+      // the fallback for when the text model is unavailable.
+      expanded || [
+        `Action for ${participant.display_name} (the viewer's own words, possibly not in English): ${cue}. Perform exactly that; keep it physically plausible and readable within the clip.`,
+        guestNames.length ? `${guestNames.join(" and ")} are in shot alongside ${participant.display_name} and act too.` : "",
+        PACING_PROMPT,
+        FIELD_AUDIO_PROMPT,
+      ].filter(Boolean).join("\n"),
+      "Continuity: preserve the first frame, contestant identity, wardrobe, location, weather, color grade and camera style.",
+      NO_SCREEN_TEXT_PROMPT,
+      "Avoid new people, face morphing, fantasy effects, sudden costume changes, or jumping to a different location.",
+    ].join("\n"),
+  };
+}
+
+// The director channel stitches the contestant channels together, so its prompt leans on the rolling
+// timeline rather than on any single viewer's instruction.
+function promptsForDirectorCut({
+  participant,
+  sourceStory,
+  timeline,
+}: {
+  participant: typeof participants.$inferSelect;
+  sourceStory: string;
+  timeline: string[];
+}) {
+  const recap = timeline.length ? `Story so far: ${timeline.join(" ")}` : "Story so far: the storm is closing in on the island and the contestants are still scattered.";
+  const sharedContinuity = [
+    sourceStory ? `Continue from this clean visual memory: ${sourceStory}.` : "Opening situation: a lone survival contestant is on a rain-soaked remote coast as a storm approaches.",
+    recap,
+    `Physical condition: ${contestantCondition(participant)}.`,
+  ].join("\n");
+  return {
+    visualMemory: `${sourceStory || recap}; stormy remote coast; documentary handheld realism; no on-screen graphics`,
+    keyframePrompt: [
+      "Create a cinematic 16:9 broadcast frame for a survival challenge using the supplied opening frame.",
+      sharedContinuity,
+      NO_SCREEN_TEXT_PROMPT,
+    ].join("\n"),
+    videoPrompt: [
+      `Continue the survival challenge broadcast for exactly ${LIVE_VIDEO_DURATION_SECONDS} seconds as a single unbroken shot.`,
+      sharedContinuity,
+      "Action: carry the moment in the opening frame forward and escalate it; let the situation develop without resolving it.",
+      // The director line is the show's god's-eye cut, so it opens out of the contestant's own framing.
+      "Camera: start on the supplied frame and pull back into a wide establishing broadcast shot that reveals the whole location and where the contestant sits in it, then keep drifting — crane up, arc around, settle on the widest view.",
+      PACING_PROMPT,
+      "Continuity: preserve the contestant identity, wardrobe, location, weather, color grade and camera style from the first frame.",
+      DIRECTOR_AUDIO_PROMPT,
+      NO_SCREEN_TEXT_PROMPT,
+      "Avoid new people, face morphing, fantasy effects, sudden costume changes, or jumping to a different location.",
+    ].join("\n"),
+  };
+}
+
+async function requireDirector() {
+  const configuredEmail = vars.get("HOST_USER_EMAIL")?.toLowerCase();
+  const currentEmail = auth.user?.email?.toLowerCase();
+  if (!currentEmail || !configuredEmail || currentEmail !== configuredEmail) {
+    throw new Error("当前账号没有导演权限");
+  }
+}
+
+async function persistVideoResult(generationId: number, remoteUrl: string) {
+  // Falling back to the provider's temporary URL means the clip 404s in a few hours, so the reason
+  // is recorded rather than swallowed.
+  try {
+    const response = await fetch(remoteUrl);
+    if (!response.ok) throw new Error(`download failed (${response.status})`);
+    const bytes = await response.arrayBuffer();
+    const path = `matches/${LIVE_SLUG}/generation-${generationId}.mp4`;
+    await storage.from(buckets.broadcastClips).put(path, bytes, {
+      contentType: response.headers.get("content-type") || "video/mp4",
+      cacheControl: "public, max-age=31536000, immutable",
+    });
+    return storage.createS3Uri(buckets.broadcastClips, path);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "unknown";
+    await db.update(generations)
+      .set({ error_message: `片段未能落盘，仍在使用临时外链：${reason}` })
+      .where(eq(generations.id, generationId))
+      .catch(() => undefined);
+    return remoteUrl;
+  }
+}
+
+async function persistTailFrame(generationId: number, frame: { bytes: ArrayBuffer; contentType: string }) {
+  const path = `matches/${LIVE_SLUG}/tail-frames/generation-${generationId}.jpg`;
+  await storage.from(buckets.broadcastClips).put(path, frame.bytes, {
+    contentType: frame.contentType || "image/jpeg",
+    cacheControl: "public, max-age=3600",
+  });
+  return storage.createS3Uri(buckets.broadcastClips, path);
+}
+
+async function submitH3VideoFromFrame(materialId: number, prompt: string, duration: number) {
+  const videoModel = await getRenoiseModel(LEGACY_LIVE_VIDEO_MODEL);
+  const materialRoles = Array.isArray(videoModel.materialRoles) ? videoModel.materialRoles : [];
+  if (!materialRoles.includes("first_frame")) throw new Error(`${LEGACY_LIVE_VIDEO_MODEL} 当前不支持首帧输入`);
+  const videoResolution = pickAdvertised(videoModel.resolutions, "768p", videoModel.defaultResolution);
+  return createRenoiseTask({
+    model: LEGACY_LIVE_VIDEO_MODEL,
+    prompt: `@material:${materialId}\n${prompt}`,
+    duration,
+    ...(videoResolution ? { resolution: videoResolution } : {}),
+    materials: [{ id: materialId, role: "first_frame", index: 0 }],
+  });
+}
+
+function pickH3Duration(videoModel: JsonObject, requested: number) {
+  const advertisedDurations = Array.isArray(videoModel.durations)
+    ? videoModel.durations.map(Number).filter(Number.isFinite)
+    : [];
+  const requestedDuration = clamp(requested || LIVE_VIDEO_DURATION_SECONDS, LIVE_VIDEO_DURATION_SECONDS, 15);
+  const defaultDuration = Number(videoModel.defaultDuration);
+  return advertisedDurations.includes(requestedDuration)
+    ? requestedDuration
+    : advertisedDurations.includes(LIVE_VIDEO_DURATION_SECONDS)
+      ? LIVE_VIDEO_DURATION_SECONDS
+      : advertisedDurations.includes(defaultDuration) ? defaultDuration : advertisedDurations[0];
+}
+
+interface GenerationRequest {
+  channel: "director" | "participant";
+  channelParticipantId: number | null;
+  participantIds: number[];
+  keyframePrompt: string;
+  videoPrompt: string;
+  visualMemory: string;
+  duration: number;
+  viewerPrompt?: string | null;
+  sourceGenerationId?: number | null;
+  openingFrameS3Uri?: string | null;
+}
+
+// The one place that decides which image opens a clip. A contestant channel is anchored by that
+// contestant's own material — their previous tail frame, or their character sheet when the channel
+// is new — which is the only way identity survives on a model with no reference-image input.
+async function openingFrameFor(request: GenerationRequest, selected: Array<typeof participants.$inferSelect>, matchId: number) {
+  if (request.openingFrameS3Uri) {
+    const url = await clipUrl(request.openingFrameS3Uri);
+    if (url) return { url, s3Uri: request.openingFrameS3Uri, source: "supplied" as const };
+  }
+  if (request.channel === "participant" && request.channelParticipantId != null) {
+    const previous = await latestChannelClip(matchId, "participant", request.channelParticipantId);
+    if (previous?.thumbnail_url) {
+      const url = await clipUrl(previous.thumbnail_url);
+      if (url) return { url, s3Uri: previous.thumbnail_url, source: "channel_tail_frame" as const };
+    }
+  }
+  const anchor = selected.find((item) => item.id === request.channelParticipantId) ?? selected[0];
+  const url = await avatarUrl(anchor?.avatar_s3_uri ?? null);
+  if (!url) throw new Error("没有可用的角色定妆图，无法提交视频任务");
+  return { url, s3Uri: anchor?.avatar_s3_uri ?? null, source: "character_sheet" as const };
+}
+
+// Manual director submissions come from the dialog as loose JSON; they always target the director
+// channel, never a contestant's own perspective line.
+function directorRequestFrom(data: JsonObject): GenerationRequest {
+  return {
+    channel: "director",
+    channelParticipantId: null,
+    participantIds: Array.isArray(data.participantIds)
+      ? data.participantIds.map(Number).filter(Number.isInteger).slice(0, 3)
+      : [],
+    keyframePrompt: cleanText(data.keyframePrompt, 3500),
+    videoPrompt: cleanText(data.videoPrompt, 3500),
+    visualMemory: cleanText(data.visualMemory, 1000),
+    duration: Number(data.duration) || LIVE_VIDEO_DURATION_SECONDS,
+  };
+}
+
+async function createLiveGeneration(request: GenerationRequest, createdBy: string) {
+  requireMiniMax();
+  const participantIds = request.participantIds.filter(Number.isInteger).slice(0, 3);
+  const keyframePrompt = cleanText(request.keyframePrompt, 3500);
+  const videoPrompt = cleanText(request.videoPrompt, 3500);
+  const visualMemory = cleanText(request.visualMemory, 1000) || cleanText(videoPrompt, 1000);
+  if (participantIds.length === 0 || !keyframePrompt || !videoPrompt) {
+    throw new Error("请选择 1–3 名参赛者并确认完整的视频提示词");
+  }
+  const match = await ensureLiveMatch();
+  const selected = await db.select().from(participants).where(and(
+    eq(participants.match_id, match.id),
+    isNotNull(participants.character_draft_id),
+    inArray(participants.id, participantIds),
+  ));
+  if (selected.length !== participantIds.length) {
+    const error = new Error("参赛者列表已经变化，请刷新后重试");
+    error.name = "ConflictError";
+    throw error;
+  }
+
+  const active = await activeGenerations(match.id);
+  const slotError = generationSlotError(active, request.channel, request.channelParticipantId);
+  if (slotError) {
+    const error = new Error(slotError.error);
+    error.name = slotError.status === 409 ? "ConflictError" : "RateLimitError";
+    throw Object.assign(error, { generation: slotError.generation });
+  }
+
+  const previousClip = await latestChannelClip(match.id, request.channel, request.channelParticipantId);
+  const duration = clamp(request.duration || LIVE_VIDEO_DURATION_SECONDS, LIVE_VIDEO_DURATION_SECONDS, 15);
+
+  const [generation] = await db.insert(generations).values({
+    match_id: match.id,
+    round: match.current_round,
+    stage: "queued",
+    model: LIVE_VIDEO_MODEL,
+    channel: request.channel,
+    channel_participant_id: request.channelParticipantId,
+    viewer_prompt: cleanText(request.viewerPrompt, VIEWER_PROMPT_MAX_CHARS) || null,
+    source_generation_id: request.sourceGenerationId ?? null,
+    prompt: JSON.stringify({
+      promptVersion: LIVE_PROMPT_VERSION,
+      keyframePrompt,
+      videoPrompt,
+      visualMemory,
+      previousGenerationId: previousClip?.id ?? null,
+    }),
+    participant_ids: JSON.stringify(participantIds),
+    duration_seconds: duration,
+    created_by: createdBy,
+  }).returning();
+
+  try {
+    const opening = await openingFrameFor(request, selected, match.id);
+    const identityLock = await identityLockLines(selected);
+    const taskPrompt = [
+      opening.source === "character_sheet"
+        ? "Starting from the supplied first frame, animate this survival challenge moment as one continuous take."
+        : "Starting from the supplied first frame, continue the exact same survival challenge moment as one continuous take.",
+      "The take is continuous but never static: the action escalates and the camera keeps moving and reframing throughout.",
+      opening.source === "character_sheet"
+        ? "The supplied frame is this contestant's official character sheet: keep the face, hair, body type and outfit identical to it."
+        : "Treat the supplied frame as the previous clip's final frame; preserve scene geometry, contestant positions, wardrobe, lighting, weather, camera style and color grade.",
+      opening.source === "character_sheet" ? cleanText(keyframePrompt, 800) : "",
+      identityLock,
+      cleanText(videoPrompt, 3500),
+      request.channel === "director" ? DIRECTOR_AUDIO_PROMPT : FIELD_AUDIO_PROMPT,
+      NO_SCREEN_TEXT_PROMPT,
+      "Avoid any hard cut to a different scene, any reset, new location, new people, face morphing, or sudden costume changes.",
+    ].filter(Boolean).join("\n");
+
+    const videoTask = await createMiniMaxVideoTask(taskPrompt, opening.url, duration);
+    // The prompt actually sent to MiniMax is persisted too, so a finished clip can be reproduced later.
+    const storedPrompt = JSON.stringify({
+      promptVersion: LIVE_PROMPT_VERSION,
+      keyframePrompt,
+      videoPrompt,
+      visualMemory,
+      taskPrompt,
+      openingFrameSource: opening.source,
+      previousGenerationId: previousClip?.id ?? null,
+    });
+    await db.update(generations).set({
+      stage: "video",
+      prompt: storedPrompt,
+      video_task_id: videoTask.id,
+    }).where(eq(generations.id, generation.id));
+    return {
+      generation: { ...generation, stage: "video" as const, prompt: storedPrompt, video_task_id: videoTask.id },
+      message: opening.source === "character_sheet"
+        ? "已用角色定妆图作为首帧，提交 MiniMax H3 Max 视频任务"
+        : "已用上一段尾帧作为首帧，提交 MiniMax H3 Max 续接视频",
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "MiniMax H3 Max 任务提交失败";
+    await db.update(generations).set({ stage: "failed", error_message: message }).where(eq(generations.id, generation.id));
+    throw new Error(message);
+  }
+}
+
+async function miniMaxVisionChat(system: string, text: string, imageUrl: string, maxTokens: number) {
+  const payload = asObject(await miniMaxFetch("/v1/text/chatcompletion_v2", {
+    method: "POST",
+    body: JSON.stringify({
+      model: VISION_MODEL,
+      messages: [
+        { role: "system", content: system },
+        {
+          role: "user",
+          content: [
+            { type: "text", text },
+            { type: "image_url", image_url: { url: imageUrl } },
+          ],
+        },
+      ],
+      max_tokens: maxTokens,
+      temperature: 0.3,
+    }),
+  }));
+  const choices = Array.isArray(payload.choices) ? payload.choices : [];
+  return cleanText(asObject(asObject(choices[0]).message).content, 1200);
+}
+
+// H3-Max only ever sees one opening frame, so across a long tail-frame chain the wardrobe, hair and
+// build drift. A written description of the character sheet, carried in every prompt, is the anchor.
+// Written once per contestant and cached on the row.
+async function ensureAppearance(participant: typeof participants.$inferSelect) {
+  if (participant.appearance) return participant.appearance;
+  const sheetUrl = await avatarUrl(participant.avatar_s3_uri);
+  if (!sheetUrl) return "";
+  try {
+    const written = await miniMaxVisionChat(
+      "You write identity-lock sheets for a video-generation pipeline, so that the same person can be "
+      + "reproduced frame after frame. Write ONE dense English paragraph covering, in this order: face shape "
+      + "and distinctive facial features, skin tone, hair length/colour/texture and how it sits, build and "
+      + "height impression, then the outfit layer by layer with exact colours and materials, then any "
+      + "identifying accent colour or accessory. Plain concrete words. No name, no story, no camera or "
+      + "lighting talk, no speculation about mood. Under 120 words. Output only the paragraph.",
+      "Describe this survival-show contestant so they can be redrawn identically in later shots.",
+      sheetUrl,
+      500,
+    );
+    const appearance = cleanText(written, 600);
+    if (!appearance) return "";
+    await db.update(participants).set({ appearance }).where(eq(participants.id, participant.id));
+    return appearance;
+  } catch {
+    // Without the anchor the clip still generates; it just drifts more over a long chain.
+    return "";
+  }
+}
+
+async function identityLockLines(selected: Array<typeof participants.$inferSelect>) {
+  const lines = await Promise.all(selected.map(async (participant) => {
+    const appearance = await ensureAppearance(participant);
+    return appearance ? `IDENTITY LOCK — ${participant.display_name} must look exactly like this in every frame: ${appearance}` : "";
+  }));
+  return lines.filter(Boolean).join("\n");
+}
+
+// The Chinese summaries are for viewers. Director prompts continue from the English memory chain.
+async function recentVisualMemories(matchId: number, limit: number) {
+  const rows = await db.select().from(generations)
+    .where(and(eq(generations.match_id, matchId), eq(generations.stage, "completed")))
+    .orderBy(desc(generations.id))
+    .limit(limit);
+  return rows.map((row) => storyTextFromGeneration(row)).filter(Boolean).reverse();
+}
+
+async function recentSummaries(matchId: number, limit: number) {
+  const rows = await db.select({ summary: generations.summary }).from(generations)
+    .where(and(eq(generations.match_id, matchId), isNotNull(generations.summary)))
+    .orderBy(desc(generations.id))
+    .limit(limit);
+  return rows.map((row) => row.summary!).reverse();
+}
+
+// Every finished clip leaves one timeline line: it feeds the next director prompt and, as a world
+// event, it is what viewers read in the feed. Never fatal — a clip stands on its own without it.
+async function summarizeClip(generation: typeof generations.$inferSelect) {
+  const [participant] = generation.channel_participant_id != null
+    ? await db.select().from(participants).where(eq(participants.id, generation.channel_participant_id)).limit(1)
+    : [];
+  const who = participant?.display_name ?? "场上选手";
+
+  // A director cut is a wide view of the situation, so it narrates from the clip it was cut from.
+  let sourceSummary = "";
+  if (generation.channel === "director" && generation.source_generation_id != null) {
+    const [source] = await db.select({ summary: generations.summary }).from(generations)
+      .where(eq(generations.id, generation.source_generation_id)).limit(1);
+    sourceSummary = source?.summary ?? "";
+  }
+
+  const fallback = generation.viewer_prompt
+    ? `${who}：${generation.viewer_prompt}`
+    : sourceSummary || `${who}仍在风暴里坚持。`;
+  let summary = fallback;
+  try {
+    const timeline = await recentSummaries(generation.match_id, 8);
+    const written = await miniMaxChat(
+      [
+        "你是一档荒岛生存真人秀的解说，负责把零散的片段串成一条连贯的故事线。",
+        "根据下面的故事时间线和这一段发生的事，写一句不超过 40 字的中文解说，推进故事：交代人物在做什么、处境如何、或者出现了什么转折。",
+        "严禁描述拍摄本身。不要出现「镜头」「画面」「切换」「特写」「远景」「推进」「扫过」「入镜」「导播」这类词，也不要提到剪辑或转播。",
+        "只讲故事里的人和事，像在向观众讲述正在发生的情节。不要重复时间线里已经说过的话。",
+        "只输出这一句，不要引号、不要前缀。",
+      ].join("\n"),
+      [
+        timeline.length ? `故事时间线（按先后）：\n${timeline.map((line, index) => `${index + 1}. ${line}`).join("\n")}` : "这是故事的开场。",
+        generation.channel === "director"
+          ? [
+            "这一段是全局视角的赛况画面，用来交代当前整体局势。",
+            sourceSummary ? `最近发生的是：${sourceSummary}` : `画面里是 ${who}。`,
+            "请从旁观全局的角度写这一句，可以交代局势、天气压力，或某个人此刻的处境。",
+          ].join("\n")
+          : [
+            `这一段是 ${who} 的视角。`,
+            `${who} 这一步要做的是：${generation.viewer_prompt ?? "继续推进生存目标"}`,
+            "请写这一句，说明他这么做的处境或结果。",
+          ].join("\n"),
+      ].join("\n\n"),
+      200,
+    );
+    if (written) summary = cleanText(written, 120);
+  } catch {
+    // Keep the template line.
+  }
+  await db.update(generations).set({ summary }).where(eq(generations.id, generation.id));
+  await db.insert(matchEvents).values({
+    match_id: generation.match_id,
+    participant_id: generation.channel_participant_id,
+    round: generation.round,
+    kind: "world",
+    title: generation.channel === "director" ? "赛况" : `${who} 的视角`,
+    detail: summary,
+  });
+  return summary;
+}
+
+// Round-robin across contestant channels: whoever has fresh footage and has waited longest since the
+// director last cut to them goes next.
+async function pickDirectorSource(matchId: number) {
+  const clips = await db.select().from(generations)
+    .where(and(
+      eq(generations.match_id, matchId),
+      eq(generations.channel, "participant"),
+      eq(generations.stage, "completed"),
+      isNotNull(generations.thumbnail_url),
+    ))
+    .orderBy(desc(generations.id));
+  const newestByParticipant = new Map<number, typeof generations.$inferSelect>();
+  for (const clip of clips) {
+    const pid = clip.channel_participant_id;
+    if (pid != null && !newestByParticipant.has(pid)) newestByParticipant.set(pid, clip);
+  }
+  if (newestByParticipant.size === 0) return null;
+
+  const directorClips = await db.select().from(generations)
+    .where(and(eq(generations.match_id, matchId), eq(generations.channel, "director"), isNotNull(generations.source_generation_id)))
+    .orderBy(desc(generations.id));
+  const sourceIds = new Set(directorClips.map((clip) => clip.source_generation_id!));
+  const lastCutAt = new Map<number, number>();
+  for (const director of directorClips) {
+    const source = clips.find((clip) => clip.id === director.source_generation_id);
+    const pid = source?.channel_participant_id;
+    if (pid != null && !lastCutAt.has(pid)) lastCutAt.set(pid, director.id);
+  }
+
+  const candidates = [...newestByParticipant.values()]
+    // A clip the director already used is not fresh footage any more.
+    .filter((clip) => !sourceIds.has(clip.id))
+    .sort((a, b) => {
+      const aCut = lastCutAt.get(a.channel_participant_id!) ?? -1;
+      const bCut = lastCutAt.get(b.channel_participant_id!) ?? -1;
+      return aCut - bCut;
+    });
+  return candidates[0] ?? null;
+}
+
+// Chained off a tail frame landing: EdgeSpark has no scheduler, so the director line advances on the
+// back of the request that made new footage usable.
+async function maybeStartDirectorClip(matchId: number) {
+  try {
+    requireMiniMax();
+    const active = await activeGenerations(matchId);
+    if (generationSlotError(active, "director", null)) return null;
+    const source = await pickDirectorSource(matchId);
+    if (!source?.channel_participant_id || !source.thumbnail_url) return null;
+    const [participant] = await db.select().from(participants)
+      .where(eq(participants.id, source.channel_participant_id)).limit(1);
+    if (!participant) return null;
+    const prompts = promptsForDirectorCut({
+      participant,
+      sourceStory: storyTextFromGeneration(source),
+      timeline: await recentVisualMemories(matchId, 3),
+    });
+    const result = await createLiveGeneration({
+      channel: "director",
+      channelParticipantId: null,
+      participantIds: [participant.id],
+      sourceGenerationId: source.id,
+      openingFrameS3Uri: source.thumbnail_url,
+      duration: LIVE_VIDEO_DURATION_SECONDS,
+      ...prompts,
+    }, "director:auto");
+    return result.generation;
+  } catch {
+    // A stalled director line must never break the request that fed it a tail frame.
+    return null;
+  }
+}
+
+async function syncLiveGeneration(id: number) {
+  if (!Number.isInteger(id)) {
+    const error = new Error("生成任务编号无效");
+    error.name = "BadRequestError";
+    throw error;
+  }
+  const [generation] = await db.select().from(generations).where(eq(generations.id, id)).limit(1);
+  if (!generation) {
+    const error = new Error("生成任务不存在");
+    error.name = "NotFoundError";
+    throw error;
+  }
+  try {
+    if (generation.stage === "keyframe" && generation.keyframe_task_id) {
+      const keyframeTask = await getRenoiseTask(generation.keyframe_task_id);
+      const status = taskStatus(keyframeTask);
+      if (status === "failed") throw new Error("比赛关键帧生成失败");
+      if (status !== "completed") return { generation, providerStatus: status || "pending" };
+      const keyframeUrl = taskResultUrl(keyframeTask);
+      if (!keyframeUrl) throw new Error("关键帧任务完成但没有可用结果地址");
+      const imageResponse = await fetch(keyframeUrl);
+      if (!imageResponse.ok) throw new Error("无法下载比赛关键帧");
+      const materialId = await uploadRenoiseMaterial(
+        await imageResponse.arrayBuffer(),
+        `generation-${generation.id}-opening.png`,
+        imageResponse.headers.get("content-type") || "image/png",
+      );
+      const promptSet = asObject(JSON.parse(generation.prompt));
+      const videoTask = await submitH3VideoFromFrame(
+        materialId,
+        cleanText(promptSet.videoPrompt, 3500),
+        generation.duration_seconds,
+      );
+      await db.update(generations).set({ stage: "video", keyframe_material_id: materialId, video_task_id: videoTask.id })
+        .where(eq(generations.id, generation.id));
+      return { generation: { ...generation, stage: "video", video_task_id: videoTask.id }, providerStatus: "pending" };
+    }
+    if (generation.stage === "video" && generation.video_task_id) {
+      if (generation.model === LIVE_VIDEO_MODEL) {
+        const videoTask = await getMiniMaxVideoTask(generation.video_task_id);
+        const status = miniMaxVideoStatus(videoTask);
+        if (status === "failed" || status === "cancelled") throw new Error("MiniMax H3 Max 视频生成失败");
+        if (status !== "succeeded") return { generation, providerStatus: status || "pending" };
+        const remoteUrl = miniMaxVideoResultUrl(videoTask);
+        if (!remoteUrl) throw new Error("MiniMax 视频任务完成但没有可用结果地址");
+        const stableUrl = await persistVideoResult(generation.id, remoteUrl);
+        const completed = { ...generation, stage: "completed" as const, result_url: stableUrl };
+        // Several viewers poll this endpoint at once. Only the request that actually flips the row
+        // may write the summary or start the director clip, or both happen twice.
+        const claimed = await db.update(generations)
+          .set({ stage: "completed", result_url: stableUrl, completed_at: new Date().toISOString() })
+          .where(and(eq(generations.id, generation.id), ne(generations.stage, "completed")))
+          .returning({ id: generations.id });
+        if (claimed.length === 0) {
+          return { generation: { ...completed, result_url: await clipUrl(stableUrl) }, providerStatus: "completed" };
+        }
+        const summary = await summarizeClip(completed).catch(() => null);
+        return {
+          generation: { ...completed, summary: summary ?? completed.summary, result_url: await clipUrl(stableUrl) },
+          providerStatus: "completed",
+        };
+      }
+      const videoTask = await getRenoiseTask(generation.video_task_id);
+      const status = taskStatus(videoTask);
+      if (status === "failed") throw new Error("H3 Max 视频生成失败");
+      if (status !== "completed") return { generation, providerStatus: status || "pending" };
+      const remoteUrl = taskResultUrl(videoTask);
+      if (!remoteUrl) throw new Error("视频任务完成但没有可用结果地址");
+      const stableUrl = await persistVideoResult(generation.id, remoteUrl);
+      await db.update(generations).set({ stage: "completed", result_url: stableUrl, completed_at: new Date().toISOString() })
+        .where(eq(generations.id, generation.id));
+      return { generation: { ...generation, stage: "completed", result_url: await clipUrl(stableUrl) }, providerStatus: "completed" };
+    }
+    if (generation.stage === "queued") {
+      // A submit that died mid-request leaves a queued row nothing will ever advance; time it out.
+      const createdAt = Date.parse(`${generation.created_at.replace(" ", "T")}Z`);
+      if (Number.isFinite(createdAt) && Date.now() - createdAt > 120_000) {
+        throw new Error("任务提交中断，未能进入生成队列");
+      }
+    }
+    return { generation, providerStatus: generation.stage };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "生成同步失败";
+    await db.update(generations).set({ stage: "failed", error_message: message }).where(eq(generations.id, generation.id));
+    return { error: message, generation: { ...generation, stage: "failed" }, failed: true };
+  }
+}
+
+function liveGenerationErrorStatus(error: unknown) {
+  const name = error instanceof Error ? error.name : "";
+  const message = error instanceof Error ? error.message : "";
+  if (name === "BadRequestError" || message.startsWith("请选择")) return 400;
+  if (name === "ConflictError") return 409;
+  if (name === "NotFoundError") return 404;
+  if (message.includes("MINIMAX_API_KEY")) return 503;
+  if (message.includes("当前没有可用") || message.includes("需要启用")) return 503;
+  return 502;
+}
+
+const app = new Hono()
+  .get("/api/public/health", (c) => c.json({ ok: true, service: "tomato-live" }))
+  .get("/api/public/live", async (c) => {
+    const match = await ensureLiveMatch();
+    const [roster, allEvents, clips, pendingGenerations] = await Promise.all([
+      db.select().from(participants)
+        .where(and(eq(participants.match_id, match.id), isNotNull(participants.character_draft_id)))
+        .orderBy(desc(participants.score)),
+      db.select().from(matchEvents).where(eq(matchEvents.match_id, match.id)).orderBy(desc(matchEvents.id)).limit(50),
+      db.select().from(generations).where(and(eq(generations.match_id, match.id), eq(generations.stage, "completed"))).orderBy(desc(generations.id)).limit(60),
+      db.select().from(generations)
+        .where(and(eq(generations.match_id, match.id), inArray(generations.stage, ["queued", "keyframe", "video"])))
+        .orderBy(desc(generations.id)),
+    ]);
+    const visibleParticipantIds = new Set(roster.map((participant) => participant.id));
+    const events = allEvents
+      .filter((event) => event.participant_id == null || visibleParticipantIds.has(event.participant_id))
+      .slice(0, 20);
+    const storyChoices = buildStoryChoices(match, roster, events, clips[0] ?? null);
+    const rosterWithUrls = await Promise.all(roster.map(async (participant) => ({
+      ...participant,
+      avatar_url: await avatarUrl(participant.avatar_s3_uri),
+      control_token_hash: undefined,
+    })));
+    const clipList = clips.map((clip) => ({
+      id: clip.id,
+      round: clip.round,
+      duration_seconds: clip.duration_seconds,
+      channel: clip.channel,
+      channel_participant_id: clip.channel_participant_id,
+      summary: clip.summary,
+      // One stable address per clip. A presigned URL changes on every poll, and a changed <video> src
+      // makes the browser drop the decoded picture and reload — the player would black out and restart.
+      result_url: clip.result_url ? `/api/public/clips/${clip.id}/video` : null,
+      has_tail_frame: Boolean(clip.thumbnail_url),
+      created_at: clip.created_at,
+    }));
+    // Contestant clips whose tail frame nobody has captured yet. The browser harvests these, and a
+    // landed frame is what advances the director line — EdgeSpark has no scheduler to do it.
+    const tailFrameWanted = clips
+      .filter((clip) => clip.channel === "participant" && clip.result_url && !clip.thumbnail_url)
+      .map((clip) => clip.id);
+    const pendingList = pendingGenerations.map((item) => ({
+      id: item.id,
+      stage: item.stage,
+      channel: item.channel,
+      channel_participant_id: item.channel_participant_id,
+      duration_seconds: item.duration_seconds,
+      created_at: item.created_at,
+    }));
+    const pendingGeneration = pendingList[0] ?? null;
+    return c.json({
+      match,
+      participants: rosterWithUrls,
+      events,
+      clips: clipList,
+      story_choices: storyChoices,
+      pending_generation: pendingGeneration,
+      pending_generations: pendingList,
+      tail_frame_wanted: tailFrameWanted,
+      generated_at: new Date().toISOString(),
+    });
+  })
+  .get("/api/public/clips/:id/video", async (c) => {
+    const id = Number(c.req.param("id"));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ error: "无效的片段 ID" }, 400);
+    const [clip] = await db.select({ stage: generations.stage, result_url: generations.result_url })
+      .from(generations).where(eq(generations.id, id)).limit(1);
+    if (!clip || clip.stage !== "completed" || !clip.result_url) return c.json({ error: "片段不存在" }, 404);
+    const signed = await clipUrl(clip.result_url);
+    if (!signed) return c.json({ error: "片段地址暂不可用" }, 404);
+    // Proxied rather than redirected: a presigned URL changes on every request, so a redirect would
+    // hand the browser a new cache key each time and re-download the whole clip.
+    const forwarded = new Headers();
+    const range = c.req.header("range");
+    const ifNoneMatch = c.req.header("if-none-match");
+    if (range) forwarded.set("range", range);
+    if (ifNoneMatch) forwarded.set("if-none-match", ifNoneMatch);
+    const upstream = await fetch(signed, { headers: forwarded });
+    if (upstream.status >= 400) return c.json({ error: "片段读取失败" }, 502);
+    const headers = new Headers();
+    for (const key of ["content-type", "content-length", "content-range", "etag", "last-modified"]) {
+      const value = upstream.headers.get(key);
+      if (value) headers.set(key, value);
+    }
+    if (!headers.has("content-type")) headers.set("content-type", "video/mp4");
+    headers.set("accept-ranges", "bytes");
+    // A completed clip never changes, so the browser can replay it straight from disk cache.
+    headers.set("cache-control", "public, max-age=31536000, immutable");
+    return new Response(upstream.body, { status: upstream.status, headers });
+  })
+  .post("/api/public/clips/:id/tail-frame", async (c) => {
+    const id = Number(c.req.param("id"));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ error: "无效的片段 ID" }, 400);
+    const [clip] = await db.select().from(generations).where(eq(generations.id, id)).limit(1);
+    if (!clip || clip.stage !== "completed" || !clip.result_url) return c.json({ error: "片段不存在" }, 404);
+    // First frame wins. Re-uploads are a no-op so a second viewer racing the first changes nothing.
+    if (clip.thumbnail_url) return c.json({ ok: true, skipped: true });
+    const contentType = c.req.header("content-type") || "";
+    if (!contentType.startsWith("image/")) return c.json({ error: "尾帧必须是图片" }, 400);
+    const bytes = await c.req.arrayBuffer();
+    if (bytes.byteLength < 1024 || bytes.byteLength > TAIL_FRAME_MAX_BYTES) {
+      return c.json({ error: "尾帧体积不合法" }, 400);
+    }
+    const s3Uri = await persistTailFrame(id, { bytes, contentType });
+    const claimed = await db.update(generations)
+      .set({ thumbnail_url: s3Uri })
+      .where(and(eq(generations.id, id), isNull(generations.thumbnail_url)))
+      .returning({ id: generations.id });
+    if (claimed.length === 0) return c.json({ ok: true, skipped: true });
+    // This frame is exactly what the director channel was waiting for.
+    const director = clip.channel === "participant" ? await maybeStartDirectorClip(clip.match_id) : null;
+    return c.json({ ok: true, directorGenerationId: director?.id ?? null });
+  })
+  .post("/api/public/avatar/presign", async (c) => {
+    const data = asObject(await c.req.json().catch(() => ({})));
+    const filename = cleanText(data.filename, 120).replace(/[^a-zA-Z0-9._-]/g, "-");
+    const contentType = cleanText(data.contentType, 80).toLowerCase();
+    if (!filename || !["image/jpeg", "image/png", "image/webp"].includes(contentType)) {
+      return c.json({ error: "仅支持 JPG、PNG 或 WebP 角色照片" }, 400);
+    }
+    const path = `avatars/${crypto.randomUUID()}-${filename}`;
+    const signed = await storage.from(buckets.characterAvatars).createPresignedPutUrl(path, 900, { contentType });
+    return c.json({ path, uploadUrl: signed.uploadUrl, requiredHeaders: signed.requiredHeaders });
+  })
+  .get("/api/public/character/cost", async (c) => {
+    const archetype = cleanText(c.req.query("archetype"), 30) || "探索者";
+    const accent = cleanText(c.req.query("accent"), 16) || ACCENTS[0];
+    return c.json({
+      model: CHARACTER_MODEL,
+      displayName: "MiniMax image-01",
+      resolution: CHARACTER_RESOLUTION,
+      estimatedCredit: null,
+      sufficient: true,
+      available: Boolean(secret.get("MINIMAX_API_KEY")),
+      notice: secret.get("MINIMAX_API_KEY")
+        ? "当前将通过 MiniMax 官方 API 生成 1 张角色定妆图。"
+        : "MiniMax API Key 尚未配置，暂时不能生成角色。",
+      prompt: characterPrompt(archetype, accent),
+    });
+  })
+  .post("/api/public/character/generations", async (c) => {
+    const data = asObject(await c.req.json().catch(() => ({})));
+    const displayName = cleanText(data.displayName, 20);
+    const archetype = cleanText(data.archetype, 30) || "探索者";
+    const accent = cleanText(data.accent, 16) || ACCENTS[Math.floor(Math.random() * ACCENTS.length)];
+    const avatarPath = cleanText(data.avatarPath, 240);
+    if (displayName.length < 2) return c.json({ error: "参赛名至少需要 2 个字符" }, 400);
+    if (!avatarPath || !avatarPath.startsWith("avatars/")) return c.json({ error: "请先上传一张有效的本人照片" }, 400);
+    if (data.creditApproved !== true) return c.json({ error: "请先确认本次角色生成将调用 MiniMax 官方 API" }, 400);
+    try {
+      requireMiniMax();
+    } catch {
+      return c.json({ error: "MiniMax API Key 尚未配置，暂时无法创建角色" }, 503);
+    }
+
+    const meta = await storage.from(buckets.characterAvatars).head(avatarPath);
+    if (!meta) return c.json({ error: "本人照片尚未上传完成" }, 400);
+    if (meta.size > 8 * 1024 * 1024) return c.json({ error: "本人照片不能超过 8MB" }, 400);
+
+    const requesterHash = await sha256(requestFingerprint(c));
+    const recent = await db.select({ id: characterDrafts.id }).from(characterDrafts).where(and(
+      eq(characterDrafts.requester_hash, requesterHash),
+      ne(characterDrafts.status, "failed"),
+      sql`${characterDrafts.created_at} >= datetime('now', '-1 hour')`,
+    ));
+    if (recent.length >= CHARACTER_RATE_LIMIT_PER_HOUR) {
+      return c.json({ error: "这个网络一小时内最多创建 3 个角色，请稍后再试" }, 429);
+    }
+
+    const publicId = crypto.randomUUID();
+    const controlToken = crypto.randomUUID();
+    const prompt = characterPrompt(archetype, accent);
+    const [draft] = await db.insert(characterDrafts).values({
+      public_id: publicId,
+      control_token_hash: await sha256(controlToken),
+      requester_hash: requesterHash,
+      display_name: displayName,
+      archetype,
+      accent,
+      source_s3_uri: storage.createS3Uri(buckets.characterAvatars, avatarPath),
+      model: CHARACTER_MODEL,
+      prompt,
+      status: "generating",
+      estimated_credit: null,
+    }).returning();
+
+    try {
+      const sourceUrl = await avatarUrl(storage.createS3Uri(buckets.characterAvatars, avatarPath));
+      if (!sourceUrl) throw new Error("无法生成本人照片的临时访问地址");
+      const imageTask = await createMiniMaxCharacterImage(prompt, sourceUrl);
+      const imageResponse = await fetch(imageTask.url);
+      if (!imageResponse.ok) throw new Error("无法下载 MiniMax 生成的角色定妆图");
+      const imageBytes = await imageResponse.arrayBuffer();
+      const contentType = imageResponse.headers.get("content-type") || "image/png";
+      const outputPath = `generated/${draft.public_id}.png`;
+      await storage.from(buckets.characterAvatars).put(outputPath, imageBytes, {
+        contentType,
+        cacheControl: "private, max-age=31536000, immutable",
+      });
+      const generatedS3Uri = storage.createS3Uri(buckets.characterAvatars, outputPath);
+      await removeStoredSource(draft.source_s3_uri);
+      const completedAt = new Date().toISOString();
+      const readyDraft = {
+        ...draft,
+        status: "ready" as const,
+        source_s3_uri: null,
+        generated_s3_uri: generatedS3Uri,
+        renoise_task_id: imageTask.id,
+        completed_at: completedAt,
+      };
+      await db.update(characterDrafts).set({
+        renoise_task_id: imageTask.id,
+        status: "ready",
+        source_s3_uri: null,
+        generated_s3_uri: generatedS3Uri,
+        completed_at: completedAt,
+      }).where(eq(characterDrafts.id, draft.id));
+      return c.json({
+        draft: await characterDraftPayload(readyDraft),
+        controlToken,
+        message: "角色定妆图已由 MiniMax 官方 API 生成",
+      }, 201);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "角色生成任务提交失败";
+      await db.update(characterDrafts).set({ status: "failed", error_message: message }).where(eq(characterDrafts.id, draft.id));
+      return c.json({ error: message }, 502);
+    }
+  })
+  .post("/api/public/character/generations/:publicId/sync", async (c) => {
+    const publicId = cleanText(c.req.param("publicId"), 64);
+    const data = asObject(await c.req.json().catch(() => ({})));
+    const controlToken = cleanText(data.controlToken, 100);
+    const draft = await getOwnedCharacterDraft(publicId, controlToken);
+    if (!draft) return c.json({ error: "无法访问这个角色草稿" }, 403);
+    if (draft.status !== "generating") return c.json({ draft: await characterDraftPayload(draft) });
+    if (!draft.renoise_task_id) return c.json({ draft: await characterDraftPayload(draft), providerStatus: "pending" });
+
+    try {
+      const imageTask = await getRenoiseTask(draft.renoise_task_id);
+      const status = taskStatus(imageTask);
+      if (status === "failed") throw new Error("角色定妆图生成失败");
+      if (status !== "completed") {
+        return c.json({ draft: await characterDraftPayload(draft), providerStatus: status || "pending" });
+      }
+      const remoteUrl = taskResultUrl(imageTask);
+      if (!remoteUrl) throw new Error("角色任务已完成，但没有可用的定妆图");
+      const imageResponse = await fetch(remoteUrl);
+      if (!imageResponse.ok) throw new Error("无法下载生成的角色定妆图");
+      const imageBytes = await imageResponse.arrayBuffer();
+      const contentType = imageResponse.headers.get("content-type") || "image/png";
+      const outputPath = `generated/${draft.public_id}.png`;
+      await storage.from(buckets.characterAvatars).put(outputPath, imageBytes, {
+        contentType,
+        cacheControl: "private, max-age=31536000, immutable",
+      });
+      const generatedMaterialId = await uploadRenoiseMaterial(
+        imageBytes,
+        `character-${draft.id}.png`,
+        contentType,
+      );
+      const generatedS3Uri = storage.createS3Uri(buckets.characterAvatars, outputPath);
+      await removeStoredSource(draft.source_s3_uri);
+      const completedAt = new Date().toISOString();
+      const readyDraft = {
+        ...draft,
+        status: "ready" as const,
+        source_s3_uri: null,
+        generated_s3_uri: generatedS3Uri,
+        renoise_generated_material_id: generatedMaterialId,
+        completed_at: completedAt,
+      };
+      await db.update(characterDrafts).set({
+        status: "ready",
+        source_s3_uri: null,
+        generated_s3_uri: generatedS3Uri,
+        renoise_generated_material_id: generatedMaterialId,
+        completed_at: completedAt,
+      }).where(eq(characterDrafts.id, draft.id));
+      return c.json({ draft: await characterDraftPayload(readyDraft), providerStatus: "completed" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "角色生成同步失败";
+      await db.update(characterDrafts).set({ status: "failed", error_message: message }).where(eq(characterDrafts.id, draft.id));
+      return c.json({ error: message, draft: await characterDraftPayload({ ...draft, status: "failed", error_message: message }) }, 502);
+    }
+  })
+  .post("/api/public/join", async (c) => {
+    const data = asObject(await c.req.json().catch(() => ({})));
+    const characterPublicId = cleanText(data.characterPublicId, 64);
+    const characterToken = cleanText(data.characterToken, 100);
+    const draft = await getOwnedCharacterDraft(characterPublicId, characterToken);
+    if (!draft) return c.json({ error: "无法确认这个角色草稿" }, 403);
+    if (draft.status === "claimed") return c.json({ error: "这个角色已经参赛" }, 409);
+    if (draft.status !== "ready" || !draft.generated_s3_uri) {
+      return c.json({ error: "请等待角色定妆图生成完成" }, 409);
+    }
+    const match = await ensureLiveMatch();
+    const controlToken = crypto.randomUUID();
+    const [participant] = await db.insert(participants).values({
+      match_id: match.id,
+      character_draft_id: draft.id,
+      display_name: draft.display_name,
+      archetype: draft.archetype,
+      accent: draft.accent,
+      avatar_s3_uri: draft.generated_s3_uri,
+      renoise_material_id: draft.renoise_generated_material_id,
+      control_token_hash: await sha256(controlToken),
+      status: "alive",
+      health: 100,
+      stamina: 86,
+      hunger: 18,
+      score: 100,
+      last_action: "正在前往入场点",
+    }).returning();
+    await db.update(characterDrafts).set({ status: "claimed", claimed_at: new Date().toISOString() })
+      .where(eq(characterDrafts.id, draft.id));
+    await db.insert(matchEvents).values({
+      match_id: match.id,
+      participant_id: participant.id,
+      round: match.current_round,
+      kind: "system",
+      title: `${draft.display_name} 已进入候场区`,
+      detail: `${draft.archetype}将在下一段安全镜头中加入比赛。`,
+    });
+    return c.json({ participantId: participant.id, controlToken, message: "定妆角色已进入候场区" }, 201);
+  })
+  .post("/api/public/action", async (c) => {
+    const data = asObject(await c.req.json().catch(() => ({})));
+    const participantId = Number(data.participantId);
+    const controlToken = cleanText(data.controlToken, 100);
+    // The viewer writes the branch themselves now; the blueprints survive only as UI shortcuts.
+    const viewerPrompt = cleanText(data.viewerPrompt ?? data.prompt, VIEWER_PROMPT_MAX_CHARS);
+    if (!Number.isInteger(participantId) || !controlToken || viewerPrompt.length < 2) {
+      return c.json({ error: "请先写下你想让角色做什么" }, 400);
+    }
+    const [participant] = await db.select().from(participants).where(eq(participants.id, participantId)).limit(1);
+    if (!participant || participant.control_token_hash !== await sha256(controlToken)) {
+      return c.json({ error: "无法控制这个角色" }, 403);
+    }
+    if (!participant.character_draft_id) return c.json({ error: "只能控制用户上传的参赛角色" }, 403);
+    if (participant.status === "eliminated") return c.json({ error: "角色已经离场" }, 409);
+    const match = await ensureLiveMatch();
+
+    // Only this contestant's own channel has to be idle; other channels keep running in parallel.
+    const active = await activeGenerations(match.id);
+    const slotError = generationSlotError(active, "participant", participant.id);
+    if (slotError) return c.json({ error: slotError.error, generation: slotError.generation }, slotError.status);
+
+    const roster = await db.select().from(participants).where(and(
+      eq(participants.match_id, match.id),
+      isNotNull(participants.character_draft_id),
+    ));
+    // MiniMax takes at most 3 people, and the channel owner always holds one of those slots.
+    const guests = mentionedParticipants(viewerPrompt, roster, participant.id).slice(0, 2);
+    const latestClip = await latestChannelClip(match.id, "participant", participant.id);
+    const { cue, keyframePrompt, videoPrompt, visualMemory } = await promptsForViewerInput({
+      viewerPrompt,
+      participant,
+      guests,
+      latestClip,
+    });
+    await db.update(participants).set({
+      last_action: viewerPrompt.slice(0, 40),
+      stamina: clamp(participant.stamina - 9),
+      hunger: clamp(participant.hunger + 4),
+      score: participant.score + 20,
+    }).where(eq(participants.id, participant.id));
+    await db.insert(matchEvents).values({
+      match_id: participant.match_id,
+      participant_id: participant.id,
+      round: match.current_round,
+      kind: "player",
+      title: `${participant.display_name} 的指令`,
+      detail: guests.length
+        ? `${viewerPrompt} 已进入 ${participant.display_name} 的视角通道，联动 ${guests.map((item) => item.display_name).join("、")}。`
+        : `${viewerPrompt} 已进入 ${participant.display_name} 的视角通道。`,
+    });
+    try {
+      const result = await createLiveGeneration({
+        channel: "participant",
+        channelParticipantId: participant.id,
+        participantIds: [participant.id, ...guests.map((item) => item.id)],
+        viewerPrompt,
+        keyframePrompt,
+        videoPrompt,
+        visualMemory,
+        duration: LIVE_VIDEO_DURATION_SECONDS,
+      }, `participant:${participant.id}`);
+      return c.json({
+        ok: true,
+        message: result.message || "指令已生效，正在生成你的视角片段",
+        cue,
+        guests: guests.map((item) => item.display_name),
+        generation: result.generation,
+      }, 201);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "生成任务提交失败";
+      return c.json({ error: message }, liveGenerationErrorStatus(error));
+    }
+  })
+  .post("/api/public/generations", async (c) => {
+    try {
+      const data = asObject(await c.req.json().catch(() => ({})));
+      const createdBy = auth.user?.id ?? `internal:${await sha256(requestFingerprint(c))}`;
+      // This endpoint spends MiniMax credit and takes a caller-supplied prompt, so it needs a cap.
+      const recent = await db.select({ id: generations.id }).from(generations).where(and(
+        eq(generations.created_by, createdBy),
+        ne(generations.stage, "failed"),
+        sql`${generations.created_at} >= datetime('now', '-1 hour')`,
+      ));
+      if (recent.length >= DIRECTOR_RATE_LIMIT_PER_HOUR) {
+        return c.json({ error: `一小时内最多手动生成 ${DIRECTOR_RATE_LIMIT_PER_HOUR} 段，请稍后再试` }, 429);
+      }
+      const result = await createLiveGeneration(directorRequestFrom(data), createdBy);
+      return c.json(result, 201);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "生成任务提交失败";
+      return c.json({ error: message }, liveGenerationErrorStatus(error));
+    }
+  })
+  .post("/api/public/generations/:id/sync", async (c) => {
+    try {
+      const result = await syncLiveGeneration(Number(c.req.param("id")));
+      if (result.failed) return c.json(result, 502);
+      return c.json(result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "生成同步失败";
+      return c.json({ error: message }, liveGenerationErrorStatus(error));
+    }
+  })
+  .get("/api/director/status", async (c) => {
+    await requireDirector();
+    return c.json({ ready: Boolean(secret.get("MINIMAX_API_KEY")), model: LIVE_VIDEO_MODEL, provider: "minimax" });
+  })
+  .get("/api/director/minimax/probe", async (c) => {
+    await requireDirector();
+    try {
+      const results = await Promise.all([
+        miniMaxProbeRequest("/v1/models"),
+      ]);
+      return c.json({ ok: true, provider: "minimax", results });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "MiniMax probe failed";
+      return c.json({ ok: false, provider: "minimax", error: message }, 500);
+    }
+  })
+  .get("/api/director/renoise/probe", async (c) => {
+    await requireDirector();
+    try {
+      const results = await Promise.all([
+        miniMaxProbeRequest("/v1/models"),
+      ]);
+      return c.json({ ok: true, provider: "minimax", legacyAlias: true, results });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "MiniMax probe failed";
+      return c.json({ ok: false, provider: "minimax", legacyAlias: true, error: message }, 500);
+    }
+  })
+  .post("/api/director/generations", async (c) => {
+    await requireDirector();
+    try {
+      const data = asObject(await c.req.json().catch(() => ({})));
+      const result = await createLiveGeneration(directorRequestFrom(data), auth.user!.id);
+      return c.json(result, 201);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "生成任务提交失败";
+      return c.json({ error: message }, liveGenerationErrorStatus(error));
+    }
+  })
+  .post("/api/director/generations/:id/sync", async (c) => {
+    await requireDirector();
+    try {
+      const result = await syncLiveGeneration(Number(c.req.param("id")));
+      if (result.failed) return c.json(result, 502);
+      return c.json(result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "生成同步失败";
+      return c.json({ error: message }, liveGenerationErrorStatus(error));
+    }
+  });
+
+export default app;

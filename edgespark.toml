@@ -1,0 +1,11 @@
+project_id = "d55cf78d-2a2d-41be-88a7-e3521c7b0d7b"
+
+[server]
+path = "server"
+
+[web]
+path = "web"
+output_path = "web/dist"
+
+[db]
+migration_branch = "main"
