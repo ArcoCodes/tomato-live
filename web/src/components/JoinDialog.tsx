@@ -197,7 +197,7 @@ export function JoinDialog({ open, onClose, onJoined }: JoinDialogProps) {
       if (!response.ok) throw new Error(result.error || "报名失败");
       const control = { participantId: result.participantId, controlToken: result.controlToken };
       localStorage.removeItem(DRAFT_STORAGE_KEY);
-      localStorage.setItem("tomato-live-control", JSON.stringify(control));
+      // App owns the control list; writing here used to overwrite the previous character's token.
       onJoined(control);
       onClose();
     } catch (cause) {

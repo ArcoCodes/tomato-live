@@ -11,10 +11,13 @@ const fallbackChoices: StoryChoice[] = [
   { id: "shelter", title: "抢建庇护", detail: "先争取一个避风点。", participantHint: "等待直播状态", round: 0, recentEvent: null },
 ];
 
-export function ActionBar({ participant, roster, linkOffers, control, choices, pendingGeneration, onUpdated }: {
+export function ActionBar({ participant, roster, myCharacters, onSwitchCharacter, linkOffers, control, choices, pendingGeneration, onUpdated }: {
   participant: Participant;
   /** Everyone else on the roster, offered as @mentions to pull into the shot. */
   roster: Participant[];
+  /** Every character this viewer holds a control token for, when they hold more than one. */
+  myCharacters: Participant[];
+  onSwitchCharacter: (participantId: number) => void;
   /** Clips that wrote this contestant in, offered with "/" as an opening frame. */
   linkOffers: LinkOffer[];
   control: PlayerControl;
@@ -156,7 +159,22 @@ export function ActionBar({ participant, roster, linkOffers, control, choices, p
     <section className="action-bar">
       <div className="my-state">
         <span className="eyebrow">YOUR MOVE</span>
-        <strong>{participant.display_name}</strong>
+        {myCharacters.length > 1 ? (
+          <div className="my-switch">
+            {myCharacters.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={item.id === participant.id ? "active" : ""}
+                onClick={() => onSwitchCharacter(item.id)}
+              >
+                {item.display_name}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <strong>{participant.display_name}</strong>
+        )}
         <div className="stat-pair"><span>HP {participant.health}</span><span>STA {participant.stamina}</span><span>HUN {participant.hunger}</span></div>
       </div>
       <div className="action-compose">

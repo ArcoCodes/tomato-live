@@ -4,6 +4,7 @@ import { Broadcast, type ChannelTab } from "@/components/Broadcast";
 import { DirectorDialog } from "@/components/DirectorDialog";
 import { EventFeed } from "@/components/EventFeed";
 import { JoinDialog } from "@/components/JoinDialog";
+import { LoginDialog } from "@/components/LoginDialog";
 import { Roster } from "@/components/Roster";
 import { useAuth } from "@/hooks/useAuth";
 import { useTailFrameHarvester } from "@/hooks/useTailFrameHarvester";
@@ -16,12 +17,42 @@ function channelKeyFor(clip: BroadcastClip) {
   return clip.channel === "director" ? DIRECTOR_CHANNEL : `p:${clip.channel_participant_id}`;
 }
 
-function readControl(): PlayerControl | null {
+const CONTROLS_KEY = "tomato-live-controls";
+const LEGACY_CONTROL_KEY = "tomato-live-control";
+
+function isControl(value: unknown): value is PlayerControl {
+  const candidate = value as PlayerControl | null;
+  return Boolean(candidate && Number.isInteger(candidate.participantId) && typeof candidate.controlToken === "string");
+}
+
+// One viewer can hold several characters. This used to be a single record that every join
+// overwrote, which silently destroyed the previous character's token.
+function readControls(): PlayerControl[] {
   try {
-    const value = localStorage.getItem("tomato-live-control");
-    return value ? JSON.parse(value) : null;
+    const stored = localStorage.getItem(CONTROLS_KEY);
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      if (Array.isArray(parsed)) return parsed.filter(isControl);
+    }
+    const legacy = localStorage.getItem(LEGACY_CONTROL_KEY);
+    if (legacy) {
+      const parsed = JSON.parse(legacy);
+      if (isControl(parsed)) {
+        localStorage.setItem(CONTROLS_KEY, JSON.stringify([parsed]));
+        return [parsed];
+      }
+    }
   } catch {
-    return null;
+    // Private browsing or corrupt payload: fall through to spectator mode.
+  }
+  return [];
+}
+
+function writeControls(list: PlayerControl[]) {
+  try {
+    localStorage.setItem(CONTROLS_KEY, JSON.stringify(list));
+  } catch {
+    // Nothing to do; the session just will not survive a reload.
   }
 }
 
@@ -40,7 +71,11 @@ function App() {
   const [error, setError] = useState("");
   const [joinOpen, setJoinOpen] = useState(false);
   const [directorOpen, setDirectorOpen] = useState(false);
-  const [control, setControl] = useState<PlayerControl | null>(() => readControl());
+  const [controls, setControls] = useState<PlayerControl[]>(() => readControls());
+  const [activeParticipantId, setActiveParticipantId] = useState<number | null>(() => readControls()[0]?.participantId ?? null);
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [accountCharacterIds, setAccountCharacterIds] = useState<number[]>([]);
+  const [quota, setQuota] = useState<{ used: number; limit: number; remaining: number } | null>(null);
   const [activeChannel, setActiveChannel] = useState(DIRECTOR_CHANNEL);
   const { user, isAuthenticated, signOut } = useAuth();
 
@@ -61,6 +96,21 @@ function App() {
     const timer = window.setInterval(() => void refresh(true), 9000);
     return () => window.clearInterval(timer);
   }, [refresh]);
+
+  // Characters owned by the signed-in account need no browser token at all; the legacy localStorage
+  // records stay valid for characters created before accounts were required.
+  const ownedIds = useMemo(() => {
+    const ids = new Set<number>(accountCharacterIds);
+    for (const item of controls) ids.add(item.participantId);
+    return [...ids];
+  }, [accountCharacterIds, controls]);
+
+  const activeId = activeParticipantId != null && ownedIds.includes(activeParticipantId)
+    ? activeParticipantId
+    : ownedIds[0] ?? null;
+  const control: PlayerControl | null = activeId == null
+    ? null
+    : controls.find((item) => item.participantId === activeId) ?? { participantId: activeId, controlToken: "" };
 
   // Channels generate in parallel now, so one heartbeat drives every pending task. ActionBar and
   // DirectorDialog read state from `live` instead of running polls of their own.
@@ -152,6 +202,52 @@ function App() {
     [control?.participantId, live?.participants],
   );
 
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setAccountCharacterIds([]);
+      setQuota(null);
+      return;
+    }
+    let active = true;
+    void (async () => {
+      try {
+        const response = await client.api.fetch("/api/public/my-characters");
+        const result = await response.json();
+        if (!active || !response.ok) return;
+        setAccountCharacterIds((result.characters ?? []).map((item: { id: number }) => item.id));
+        setQuota(result.quota ?? null);
+      } catch {
+        // Spectator mode still works without this.
+      }
+    })();
+    return () => { active = false; };
+  }, [isAuthenticated, live?.participants.length]);
+
+  const myCharacters = useMemo(
+    () => ownedIds
+      .map((id) => live?.participants.find((participant) => participant.id === id))
+      .filter((participant): participant is NonNullable<typeof participant> => Boolean(participant)),
+    [ownedIds, live?.participants],
+  );
+
+  function addControl(next: PlayerControl) {
+    setControls((current) => {
+      const merged = [...current.filter((item) => item.participantId !== next.participantId), next];
+      writeControls(merged);
+      return merged;
+    });
+    setActiveParticipantId(next.participantId);
+  }
+
+  function openJoin() {
+    // Creating a character now requires an account, so send anonymous viewers to sign in first.
+    if (!isAuthenticated) {
+      setLoginOpen(true);
+      return;
+    }
+    setJoinOpen(true);
+  }
+
   function openDirector() {
     setDirectorOpen(true);
   }
@@ -183,7 +279,7 @@ function App() {
         <div className="topbar-actions">
           <span className="viewer-count"><i /> {live.match.viewers.toLocaleString()} WATCHING</span>
           <button className="text-action" onClick={openDirector}>生成下一段</button>
-          <button className="join-action" onClick={() => setJoinOpen(true)}>{myParticipant ? "角色档案" : "加入挑战"}<span>↗</span></button>
+          <button className="join-action" onClick={openJoin}>{myParticipant ? "角色档案" : "加入挑战"}<span>↗</span></button>
         </div>
       </header>
 
@@ -210,6 +306,8 @@ function App() {
         <ActionBar
           participant={myParticipant}
           roster={live.participants}
+          myCharacters={myCharacters}
+          onSwitchCharacter={setActiveParticipantId}
           linkOffers={linkOffers}
           control={control}
           choices={live.story_choices}
@@ -219,8 +317,10 @@ function App() {
       ) : (
         <section className="spectator-bar">
           <div><span className="eyebrow">SPECTATOR MODE</span><strong>你正在以观众身份观看</strong></div>
-          <p>创建角色，下一轮就有机会进入直播画面。</p>
-          <button onClick={() => setJoinOpen(true)}>创建参赛角色 <span>→</span></button>
+          <p>{quota && quota.remaining <= 0
+          ? `你的账号已创建 ${quota.used} 个角色，达到上限 ${quota.limit} 个。`
+          : "创建角色，下一轮就有机会进入直播画面。"}</p>
+          <button onClick={openJoin}>{isAuthenticated ? "创建参赛角色" : "登录后创建角色"} <span>→</span></button>
         </section>
       )}
 
@@ -233,7 +333,8 @@ function App() {
         </div>
       </footer>
 
-      <JoinDialog open={joinOpen} onClose={() => setJoinOpen(false)} onJoined={(next) => { setControl(next); void refresh(true); }} />
+      <LoginDialog open={loginOpen} onClose={() => setLoginOpen(false)} />
+      <JoinDialog open={joinOpen} onClose={() => setJoinOpen(false)} onJoined={(next) => { addControl(next); void refresh(true); }} />
       <DirectorDialog
         open={directorOpen}
         onClose={() => setDirectorOpen(false)}

@@ -17,6 +17,9 @@ const LEGACY_LIVE_VIDEO_MODEL = "hailuo-h3-max";
 const LIVE_VIDEO_RESOLUTION = "480P";
 const LIVE_VIDEO_DURATION_SECONDS = 10;
 const CHARACTER_RATE_LIMIT_PER_HOUR = 3;
+// Everyone gets one contestant; the host account runs the show and needs several.
+const CHARACTER_LIMIT_PER_USER = 1;
+const CHARACTER_LIMIT_HOST = 12;
 const DIRECTOR_RATE_LIMIT_PER_HOUR = 6;
 const ACCENTS = ["#d8ff4f", "#ff7448", "#7ec8ff", "#f4c06a", "#c7a7ff"];
 const LIVE_PROMPT_VERSION = "channel-v3";
@@ -959,12 +962,24 @@ function promptsForDirectorCut({
   };
 }
 
-async function requireDirector() {
+function isHostAccount() {
   const configuredEmail = vars.get("HOST_USER_EMAIL")?.toLowerCase();
   const currentEmail = auth.user?.email?.toLowerCase();
-  if (!currentEmail || !configuredEmail || currentEmail !== configuredEmail) {
-    throw new Error("当前账号没有导演权限");
-  }
+  return Boolean(currentEmail && configuredEmail && currentEmail === configuredEmail);
+}
+
+async function requireDirector() {
+  if (!isHostAccount()) throw new Error("当前账号没有导演权限");
+}
+
+async function characterQuota(matchId: number) {
+  const limit = isHostAccount() ? CHARACTER_LIMIT_HOST : CHARACTER_LIMIT_PER_USER;
+  if (!auth.user) return { used: 0, limit, remaining: 0 };
+  const mine = await db.select({ id: participants.id }).from(participants).where(and(
+    eq(participants.match_id, matchId),
+    eq(participants.user_id, auth.user.id),
+  ));
+  return { used: mine.length, limit, remaining: Math.max(0, limit - mine.length) };
 }
 
 async function persistVideoResult(generationId: number, remoteUrl: string) {
@@ -1632,6 +1647,14 @@ const app = new Hono()
     });
   })
   .post("/api/public/character/generations", async (c) => {
+    // Characters belong to accounts now: it is what makes them recoverable and what the per-user
+    // limit is counted against.
+    if (!auth.user) return c.json({ error: "请先登录后再创建角色" }, 401);
+    const quotaMatch = await ensureLiveMatch();
+    const quota = await characterQuota(quotaMatch.id);
+    if (quota.remaining <= 0) {
+      return c.json({ error: `每个账号最多创建 ${quota.limit} 个角色，你已经创建了 ${quota.used} 个` }, 403);
+    }
     const data = asObject(await c.req.json().catch(() => ({})));
     const displayName = cleanText(data.displayName, 20);
     const archetype = cleanText(data.archetype, 30) || "探索者";
@@ -1777,6 +1800,7 @@ const app = new Hono()
     }
   })
   .post("/api/public/join", async (c) => {
+    if (!auth.user) return c.json({ error: "请先登录后再让角色入场" }, 401);
     const data = asObject(await c.req.json().catch(() => ({})));
     const characterPublicId = cleanText(data.characterPublicId, 64);
     const characterToken = cleanText(data.characterToken, 100);
@@ -1787,10 +1811,16 @@ const app = new Hono()
       return c.json({ error: "请等待角色定妆图生成完成" }, 409);
     }
     const match = await ensureLiveMatch();
+    const quota = await characterQuota(match.id);
+    if (quota.remaining <= 0) {
+      return c.json({ error: `每个账号最多参赛 ${quota.limit} 个角色，你已经有 ${quota.used} 个在场上` }, 403);
+    }
     const controlToken = crypto.randomUUID();
     const [participant] = await db.insert(participants).values({
       match_id: match.id,
       character_draft_id: draft.id,
+      // Recorded so a signed-in viewer can recover a character whose token they lost.
+      user_id: auth.user?.id ?? null,
       display_name: draft.display_name,
       archetype: draft.archetype,
       accent: draft.accent,
@@ -1816,19 +1846,35 @@ const app = new Hono()
     });
     return c.json({ participantId: participant.id, controlToken, message: "定妆角色已进入候场区" }, 201);
   })
+  .get("/api/public/my-characters", async (c) => {
+    const match = await ensureLiveMatch();
+    const quota = await characterQuota(match.id);
+    if (!auth.user) return c.json({ characters: [], quota, isHost: false, signedIn: false });
+    // Ownership now lives on the account, so a lost browser token no longer loses the character.
+    const mine = await db.select().from(participants)
+      .where(and(eq(participants.match_id, match.id), eq(participants.user_id, auth.user.id)))
+      .orderBy(participants.id);
+    return c.json({
+      characters: mine.map((item) => ({ id: item.id, display_name: item.display_name, status: item.status })),
+      quota,
+      isHost: isHostAccount(),
+      signedIn: true,
+    });
+  })
   .post("/api/public/action", async (c) => {
     const data = asObject(await c.req.json().catch(() => ({})));
     const participantId = Number(data.participantId);
     const controlToken = cleanText(data.controlToken, 100);
     // The viewer writes the branch themselves now; the blueprints survive only as UI shortcuts.
     const viewerPrompt = cleanText(data.viewerPrompt ?? data.prompt, VIEWER_PROMPT_MAX_CHARS);
-    if (!Number.isInteger(participantId) || !controlToken || viewerPrompt.length < 2) {
+    if (!Number.isInteger(participantId) || viewerPrompt.length < 2) {
       return c.json({ error: "请先写下你想让角色做什么" }, 400);
     }
     const [participant] = await db.select().from(participants).where(eq(participants.id, participantId)).limit(1);
-    if (!participant || participant.control_token_hash !== await sha256(controlToken)) {
-      return c.json({ error: "无法控制这个角色" }, 403);
-    }
+    if (!participant) return c.json({ error: "无法控制这个角色" }, 403);
+    const ownsBySession = Boolean(auth.user && participant.user_id === auth.user.id);
+    const ownsByToken = Boolean(controlToken && participant.control_token_hash === await sha256(controlToken));
+    if (!ownsBySession && !ownsByToken) return c.json({ error: "无法控制这个角色" }, 403);
     if (!participant.character_draft_id) return c.json({ error: "只能控制用户上传的参赛角色" }, 403);
     if (participant.status === "eliminated") return c.json({ error: "角色已经离场" }, 409);
     const match = await ensureLiveMatch();

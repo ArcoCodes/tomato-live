@@ -27,11 +27,11 @@ export function LoginDialog({ open, onClose }: { open: boolean; onClose: () => v
   if (!open) return null;
   return (
     <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <div className="auth-dialog" role="dialog" aria-modal="true" aria-label="导演登录">
+      <div className="auth-dialog" role="dialog" aria-modal="true" aria-label="登录">
         <button className="modal-close" onClick={onClose} aria-label="关闭">×</button>
-        <div className="dialog-index">DIRECTOR ACCESS</div>
-        <h2>进入导演台</h2>
-        <p>生成操作会调用 MiniMax 官方 API，仅活动导演账号可以执行。</p>
+        <div className="dialog-index">ACCOUNT</div>
+        <h2>登录后加入挑战</h2>
+        <p>角色归属于账号：登录后创建的角色不会因为换设备或清空浏览器缓存而失去控制权。</p>
         <div ref={mountRef} />
       </div>
     </div>

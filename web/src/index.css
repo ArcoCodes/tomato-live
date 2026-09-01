@@ -163,6 +163,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .action-options { display: grid; grid-template-columns: repeat(6, minmax(80px, 1fr)); border: 1px solid var(--line); }
 .action-options button { min-height: 46px; padding: 8px; border: 0; border-right: 1px solid var(--line); background: transparent; cursor: pointer; font-size: 10px; transition: background .15s ease, color .15s ease; }
 .action-options button:last-child { border-right: 0; }.action-options button:not(:disabled):hover { background: var(--brand); color: #11160b; }.action-options button:disabled { cursor: not-allowed; opacity: .45; pointer-events: none; }
+.my-switch { display: flex; flex-wrap: wrap; gap: 4px; margin: 1px 0 2px; }
+.my-switch button { padding: 3px 8px; border: 1px solid var(--line); background: transparent; color: var(--muted); font-size: 11px; cursor: pointer; }
+.my-switch button.active { border-color: var(--brand); background: rgba(216,255,79,.12); color: var(--brand); font-weight: 600; }
 .action-compose { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .action-shortcuts { display: flex; gap: 5px; overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
 .action-shortcuts button { flex: none; padding: 4px 9px; border: 1px solid var(--line); background: transparent; color: var(--muted); font-size: 9px; cursor: pointer; white-space: nowrap; transition: border-color .15s ease, color .15s ease; }
