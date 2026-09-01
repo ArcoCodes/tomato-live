@@ -158,22 +158,33 @@ export function ActionBar({ participant, roster, myCharacters, onSwitchCharacter
   return (
     <section className="action-bar">
       <div className="my-state">
-        <span className="eyebrow">YOUR MOVE</span>
         {myCharacters.length > 1 ? (
           <div className="my-switch">
             {myCharacters.map((item) => (
               <button
                 key={item.id}
                 type="button"
+                title={`切换到 ${item.display_name}`}
                 className={item.id === participant.id ? "active" : ""}
                 onClick={() => onSwitchCharacter(item.id)}
               >
-                {item.display_name}
+                {item.avatar_url
+                  ? <img src={item.avatar_url} alt="" />
+                  : <i>{item.display_name.slice(0, 1)}</i>}
+                <span>{item.display_name}</span>
               </button>
             ))}
           </div>
         ) : (
-          <strong>{participant.display_name}</strong>
+          <div className="my-identity">
+            {participant.avatar_url
+              ? <img className="my-avatar" src={participant.avatar_url} alt="" />
+              : <i className="my-avatar">{participant.display_name.slice(0, 1)}</i>}
+            <div>
+              <span className="eyebrow">YOUR MOVE</span>
+              <strong>{participant.display_name}</strong>
+            </div>
+          </div>
         )}
         <div className="stat-pair"><span>HP {participant.health}</span><span>STA {participant.stamina}</span><span>HUN {participant.hunger}</span></div>
       </div>
@@ -247,8 +258,8 @@ export function ActionBar({ participant, roster, myCharacters, onSwitchCharacter
             {busy ? "提交中" : channelBusy ? "生成中" : "生成这一段"}
           </button>
         </div>
+        <p className="action-notice">{statusText}</p>
       </div>
-      <p className="action-notice">{statusText}</p>
     </section>
   );
 }

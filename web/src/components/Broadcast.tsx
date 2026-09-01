@@ -396,9 +396,8 @@ export function Broadcast({ clips, channels, activeChannel, onSelectChannel }: {
               {item.avatarUrl ? <img src={item.avatarUrl} alt="" /> : <i />}
             </span>
             <span className="channel-copy">
-              <span>{item.pending ? "生成中" : "通道"}</span>
               <strong>{item.label}</strong>
-              <small>{item.detail}</small>
+              <small className={item.pending ? "is-pending" : ""}>{item.pending ? "生成中…" : item.detail}</small>
             </span>
           </button>
         ))}
