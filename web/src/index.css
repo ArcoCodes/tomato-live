@@ -139,13 +139,20 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .sound-toggle.is-live { background: var(--brand); color: #fff; }
 .scan-lines { pointer-events: none; position: absolute; inset: 0; opacity: .08; background: repeating-linear-gradient(180deg, transparent 0 3px, rgba(0,0,0,.5) 4px); mix-blend-mode: multiply; }
 .channel-bar { flex: none; display: flex; gap: 6px; padding: 8px; overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--sh-1); }
-.channel-bar button { min-width: 106px; padding: 8px 11px; border: 1px solid transparent; border-radius: var(--r-md); background: var(--surface-2); color: var(--muted); text-align: left; cursor: pointer; display: flex; flex-direction: column; gap: 2px; transition: border-color .16s ease, background .16s ease, color .16s ease; }
+.channel-bar button { min-width: 142px; padding: 7px 12px 7px 7px; border: 1px solid transparent; border-radius: var(--r-md); background: var(--surface-2); color: var(--muted); text-align: left; cursor: pointer; display: flex; align-items: center; gap: 9px; transition: border-color .16s ease, background .16s ease, color .16s ease; }
 .channel-bar button:hover { background: var(--surface-3); color: var(--text); }
 .channel-bar button.active { background: var(--brand-soft); border-color: rgba(230,75,34,.32); color: var(--text); }
-.channel-bar button span { font: 7px var(--utility); letter-spacing: .12em; color: var(--faint); }
-.channel-bar button.active span { color: var(--brand); font-weight: 600; }
-.channel-bar button strong { font: 14px var(--display); letter-spacing: .04em; font-weight: 400; white-space: nowrap; }
-.channel-bar button small { color: var(--faint); font-size: 8px; white-space: nowrap; }
+.channel-thumb { flex: none; width: 34px; height: 40px; border-radius: var(--r-sm); overflow: hidden; background: var(--surface-3); display: grid; place-items: center; box-shadow: 0 0 0 1px var(--line); }
+.channel-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.channel-thumb.is-director { background: var(--brand); box-shadow: none; position: relative; }
+.channel-thumb.is-director i { width: 13px; height: 2.5px; border-radius: 2px; background: #fff; position: relative; }
+.channel-thumb.is-director i::after { content: ""; position: absolute; left: 5.25px; top: -5.25px; width: 2.5px; height: 13px; border-radius: 2px; background: #fff; }
+.channel-thumb.is-pending { box-shadow: 0 0 0 2px var(--brand); animation: soft-pulse 1.5s ease infinite; }
+.channel-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.channel-copy > span { font: 7px var(--utility); letter-spacing: .12em; color: var(--faint); }
+.channel-bar button.active .channel-copy > span { color: var(--brand); font-weight: 600; }
+.channel-copy strong { font: 14px var(--display); letter-spacing: .04em; font-weight: 400; white-space: nowrap; }
+.channel-copy small { color: var(--faint); font-size: 8px; white-space: nowrap; }
 
 .clip-history { min-height: 82px; display: grid; grid-template-columns: 106px 1fr; gap: 12px; padding: 12px; border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--sh-1); }
 .clip-history-heading { display: flex; flex-direction: column; justify-content: center; gap: 4px; padding-right: 12px; border-right: 1px solid var(--line); }

@@ -44,6 +44,8 @@ export interface ChannelTab {
   label: string;
   detail: string;
   pending: boolean;
+  /** The contestant's character sheet; null for the director channel. */
+  avatarUrl: string | null;
 }
 
 export function Broadcast({ clips, channels, activeChannel, onSelectChannel }: {
@@ -390,9 +392,14 @@ export function Broadcast({ clips, channels, activeChannel, onSelectChannel }: {
             className={item.key === activeChannel ? "active" : ""}
             onClick={() => onSelectChannel(item.key)}
           >
-            <span>{item.pending ? "生成中" : "通道"}</span>
-            <strong>{item.label}</strong>
-            <small>{item.detail}</small>
+            <span className={`channel-thumb${item.avatarUrl ? "" : " is-director"}${item.pending ? " is-pending" : ""}`}>
+              {item.avatarUrl ? <img src={item.avatarUrl} alt="" /> : <i />}
+            </span>
+            <span className="channel-copy">
+              <span>{item.pending ? "生成中" : "通道"}</span>
+              <strong>{item.label}</strong>
+              <small>{item.detail}</small>
+            </span>
           </button>
         ))}
       </div>
