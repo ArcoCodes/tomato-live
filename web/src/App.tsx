@@ -251,6 +251,19 @@ function App() {
     setActiveParticipantId(next.participantId);
   }
 
+  async function handleSignOut() {
+    // Drop the browser tokens for characters this account owns, so signing out actually gives up
+    // control instead of falling back to the legacy token path.
+    const accountOwned = new Set(accountCharacterIds);
+    await signOut();
+    setControls((current) => {
+      const kept = current.filter((item) => !accountOwned.has(item.participantId));
+      writeControls(kept);
+      return kept;
+    });
+    setActiveParticipantId(null);
+  }
+
   function openJoin() {
     // Creating a character now requires an account, so send anonymous viewers to sign in first.
     if (!isAuthenticated) {
@@ -331,7 +344,7 @@ function App() {
       <footer>
         <span>© 2026 RENOISE LIVE / POWERED BY EDGESPARK + MINIMAX</span>
         <div>
-          {isAuthenticated && <button onClick={() => signOut()}>{user?.email} · 退出</button>}
+          {isAuthenticated && <button onClick={() => void handleSignOut()}>{user?.email} · 退出</button>}
           <span>LIVE LATENCY 12.4S</span>
           <span>GENERATION BUFFER 01</span>
         </div>

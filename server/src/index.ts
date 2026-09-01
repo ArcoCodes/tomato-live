@@ -1874,7 +1874,11 @@ const app = new Hono()
     const [participant] = await db.select().from(participants).where(eq(participants.id, participantId)).limit(1);
     if (!participant) return c.json({ error: "无法控制这个角色" }, 403);
     const ownsBySession = Boolean(auth.user && participant.user_id === auth.user.id);
-    const ownsByToken = Boolean(controlToken && participant.control_token_hash === await sha256(controlToken));
+    // Once a character belongs to an account, the account is the only way in. The browser token
+    // stays valid only for characters that predate accounts and were never claimed — otherwise
+    // signing out would leave control behind in localStorage.
+    const ownsByToken = !participant.user_id
+      && Boolean(controlToken && participant.control_token_hash === await sha256(controlToken));
     if (!ownsBySession && !ownsByToken) return c.json({ error: "无法控制这个角色" }, 403);
     if (!participant.character_draft_id) return c.json({ error: "只能控制用户上传的参赛角色" }, 403);
     if (participant.status === "eliminated") return c.json({ error: "角色已经离场" }, 409);
