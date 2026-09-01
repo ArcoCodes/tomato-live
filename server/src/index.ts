@@ -21,7 +21,8 @@ const CHARACTER_RATE_LIMIT_PER_HOUR = 3;
 const CHARACTER_LIMIT_PER_USER = 1;
 const CHARACTER_LIMIT_HOST = 12;
 const DIRECTOR_RATE_LIMIT_PER_HOUR = 6;
-const ACCENTS = ["#d8ff4f", "#ff7448", "#7ec8ff", "#f4c06a", "#c7a7ff"];
+// Mid-dark hues: they sit on white with enough contrast to carry white text in the avatar tile.
+const ACCENTS = ["#e64b22", "#1d7874", "#b4530a", "#4a4e9c", "#a6273f"];
 const LIVE_PROMPT_VERSION = "channel-v3";
 // Older clips still carry usable visual memory, so they stay readable as continuity sources.
 const CONTINUABLE_PROMPT_VERSIONS = new Set(["textless-v2", LIVE_PROMPT_VERSION]);

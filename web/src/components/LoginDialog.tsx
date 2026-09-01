@@ -15,9 +15,9 @@ export function LoginDialog({ open, onClose }: { open: boolean; onClose: () => v
     const mounted = client.authUI.mount(mountRef.current, {
       onSuccess: () => onCloseRef.current(),
       appearance: {
-        theme: AUTH_UI_THEME.DARK,
+        theme: AUTH_UI_THEME.LIGHT,
         variables: {
-          [AUTH_UI_APPEARANCE_VARIABLE.PRIMARY]: "#d8ff4f",
+          [AUTH_UI_APPEARANCE_VARIABLE.PRIMARY]: "#e64b22",
         },
       },
     });

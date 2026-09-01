@@ -3,7 +3,7 @@ import { client } from "@/lib/edgespark";
 import type { CharacterCost, CharacterDraft, CharacterDraftControl, PlayerControl } from "@/types/live";
 
 const archetypes = ["野外医生", "机械师", "侦察兵", "植物学家", "攀登者", "厨师"];
-const accents = ["#d8ff4f", "#ff7448", "#7ec8ff", "#f4c06a", "#c7a7ff"];
+const accents = ["#e64b22", "#1d7874", "#b4530a", "#4a4e9c", "#a6273f"];
 const DRAFT_STORAGE_KEY = "tomato-live-character-draft";
 
 interface JoinDialogProps {
