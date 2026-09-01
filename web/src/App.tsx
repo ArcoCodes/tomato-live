@@ -165,7 +165,7 @@ function App() {
       label: "总导播",
       detail: directorCount ? `${directorCount} 段串播` : "等待素材",
       pending: pending.some((item) => item.channel === "director"),
-      avatarUrl: null,
+      avatarUrl: "/director.png",
     }];
     for (const participant of live.participants) {
       const count = live.clips.filter((clip) => clip.channel_participant_id === participant.id).length;
@@ -293,14 +293,6 @@ function App() {
           <button className="join-action" onClick={openJoin}>{myParticipant ? "角色档案" : "加入挑战"}<span>↗</span></button>
         </div>
       </header>
-
-      <div className="status-strip">
-        <span><i className="pulse-dot" /> LIVE EVENT</span>
-        <span>ZONE / {live.match.zone}</span>
-        <span>ROUND / {String(live.match.current_round).padStart(2, "0")}</span>
-        <span>MODEL / MINIMAX H3 MAX</span>
-        <span className="weather-alert">⚠ TROPICAL STORM APPROACHING</span>
-      </div>
 
       <main className="live-grid">
         <Roster participants={live.participants} selectedId={control?.participantId} />
