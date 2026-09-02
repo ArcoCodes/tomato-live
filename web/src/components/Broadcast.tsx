@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type RefObject, type SyntheticEvent } from "react";
-import type { BroadcastClip, Participant } from "@/types/live";
+import { DirectorVote } from "@/components/DirectorVote";
+import type { BroadcastClip, DirectorVote as VoteData, Participant } from "@/types/live";
 
 // Playback tracing: add ?debug to the URL, or set localStorage.broadcastDebug = "1".
 const DEBUG = (() => {
@@ -76,7 +77,7 @@ function GenerationProgress({ stage }: { stage: "queued" | "keyframe" | "video" 
   );
 }
 
-export function Broadcast({ clips, participants, channels, activeChannel, onSelectChannel, myPendingStage }: {
+export function Broadcast({ clips, participants, channels, activeChannel, onSelectChannel, myPendingStage, vote, onVoted }: {
   clips: BroadcastClip[];
   /** Needed to show whose clip each archive card is, by character sheet rather than by name. */
   participants: Participant[];
@@ -85,6 +86,9 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
   onSelectChannel: (key: string) => void;
   /** This viewer's own generation, if one is running — it gets a prominent bar, not a small label. */
   myPendingStage?: "queued" | "keyframe" | "video";
+  /** Only shown on the director channel: the fork viewers are steering right now. */
+  vote?: VoteData | null;
+  onVoted?: () => void;
 }) {
   const playable = useMemo(
     () => clips
@@ -498,6 +502,7 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
         ) : null}
         <div className="scan-lines" />
         {myPendingStage ? <GenerationProgress stage={myPendingStage} /> : null}
+        {vote && onVoted ? <DirectorVote vote={vote} onVoted={onVoted} /> : null}
         {/* The timeline summary doubles as a caption, so the show reads even with the sound off. */}
         {clip?.summary && firstFrameShown ? (
           <div className="broadcast-subtitle">

@@ -88,12 +88,16 @@ function App() {
   const [activeChannel, setActiveChannel] = useState(DIRECTOR_CHANNEL);
   const { user, isAuthenticated, signOut } = useAuth();
 
+  // Drives the poll rate below: a 10s vote window is unreadable at a 9s interval.
+  const [voteOpen, setVoteOpen] = useState(false);
+
   const refresh = useCallback(async (quiet = false) => {
     try {
       const response = await client.api.fetch("/api/public/live");
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "直播状态不可用");
       setLive(result);
+      setVoteOpen(Boolean(result.director_vote));
       setError("");
     } catch (cause) {
       if (!quiet) setError(cause instanceof Error ? cause.message : "直播状态不可用");
@@ -102,9 +106,9 @@ function App() {
 
   useEffect(() => {
     void refresh();
-    const timer = window.setInterval(() => void refresh(true), 9000);
+    const timer = window.setInterval(() => void refresh(true), voteOpen ? 2000 : 9000);
     return () => window.clearInterval(timer);
-  }, [refresh]);
+  }, [refresh, voteOpen]);
 
   // Characters owned by the signed-in account need no browser token at all; the legacy localStorage
   // records stay valid for characters created before accounts were required.
@@ -327,6 +331,8 @@ function App() {
           activeChannel={activeChannel}
           onSelectChannel={setActiveChannel}
           myPendingStage={myPendingStage}
+          vote={activeChannel === DIRECTOR_CHANNEL ? live.director_vote : null}
+          onVoted={() => void refresh(true)}
         />
         <MatchTimeline
           participants={live.participants.filter((item) => item.status !== "eliminated")}

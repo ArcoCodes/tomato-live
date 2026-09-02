@@ -98,6 +98,39 @@ export const matchEvents = sqliteTable("match_events", {
   index("events_participant_idx").on(table.participant_id),
 ]);
 
+export const directorRounds = sqliteTable("director_rounds", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  match_id: integer("match_id").notNull().references(() => matches.id),
+  // The clip this fork branches from; its tail frame opens both candidates.
+  source_generation_id: integer("source_generation_id"),
+  option_a_label: text("option_a_label").notNull(),
+  option_b_label: text("option_b_label").notNull(),
+  option_a_cue: text("option_a_cue").notNull(),
+  option_b_cue: text("option_b_cue").notNull(),
+  votes_a: integer("votes_a").notNull().default(0),
+  votes_b: integer("votes_b").notNull().default(0),
+  status: text("status", { enum: ["voting", "settled"] }).notNull().default("voting"),
+  winner: text("winner", { enum: ["a", "b"] }),
+  closes_at: text("closes_at").notNull(),
+  created_at: text("created_at").notNull().default(sql`(current_timestamp)`),
+}, (table) => [
+  index("director_rounds_match_idx").on(table.match_id, table.status),
+  // The guard in openDirectorRound is read-then-write and concurrent pollers slipped through it.
+  // A partial unique index is what actually keeps one open fork per match.
+  uniqueIndex("director_rounds_one_open").on(table.match_id).where(sql`status = 'voting'`),
+]);
+
+export const directorVotes = sqliteTable("director_votes", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  round_id: integer("round_id").notNull().references(() => directorRounds.id),
+  // Hash of the caller fingerprint: one vote per viewer per round, without storing who they are.
+  voter_hash: text("voter_hash").notNull(),
+  option: text("option", { enum: ["a", "b"] }).notNull(),
+  created_at: text("created_at").notNull().default(sql`(current_timestamp)`),
+}, (table) => [
+  uniqueIndex("director_votes_unique").on(table.round_id, table.voter_hash),
+]);
+
 export const generations = sqliteTable("generations", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   match_id: integer("match_id").notNull().references(() => matches.id),
@@ -122,6 +155,11 @@ export const generations = sqliteTable("generations", {
   viewer_prompt: text("viewer_prompt"),
   // Which contestant clip a director clip took its opening frame from.
   source_generation_id: integer("source_generation_id"),
+  // Voting candidates are generated up front and only one of them ever airs, so the archive and the
+  // player have to be able to tell a candidate from a clip that is actually part of the broadcast.
+  vote_state: text("vote_state", { enum: ["candidate", "winner", "discarded"] }),
+  vote_round_id: integer("vote_round_id"),
+  vote_option: text("vote_option", { enum: ["a", "b"] }),
   created_by: text("created_by").notNull(),
   created_at: text("created_at").notNull().default(sql`(current_timestamp)`),
   completed_at: text("completed_at"),

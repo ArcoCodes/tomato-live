@@ -1,8 +1,8 @@
-import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { db, secret, storage, vars } from "edgespark";
 import { auth } from "edgespark/http";
-import { buckets, characterDrafts, generations, matchEvents, matches, participants } from "@defs";
+import { buckets, characterDrafts, directorRounds, directorVotes, generations, matchEvents, matches, participants } from "@defs";
 
 const LIVE_SLUG = "island-zero";
 const RENOISE_DEFAULT_BASE_URL = "https://www.renoise.ai/api/public/v1";
@@ -25,7 +25,10 @@ const ACCENTS = ["#e64b22", "#1d7874", "#b4530a", "#4a4e9c", "#a6273f"];
 const LIVE_PROMPT_VERSION = "channel-v3";
 // Older clips still carry usable visual memory, so they stay readable as continuity sources.
 const CONTINUABLE_PROMPT_VERSIONS = new Set(["textless-v2", LIVE_PROMPT_VERSION]);
-const MAX_CONCURRENT_GENERATIONS = 3;
+const MAX_CONCURRENT_GENERATIONS = 4;
+// The vote runs while the current clip plays; both candidates are generated during it, and the
+// loser is kept rather than deleted so it could later feed a parallel line.
+const VOTE_WINDOW_SECONDS = 10;
 const VIEWER_PROMPT_MAX_CHARS = 300;
 const TAIL_FRAME_MAX_BYTES = 4 * 1024 * 1024;
 const SUMMARY_MODEL = "MiniMax-M2";
@@ -726,8 +729,10 @@ function generationSlotError(
   active: Array<typeof generations.$inferSelect>,
   channel: "director" | "participant",
   participantId: number | null,
+  // The two candidates of a fork share the director channel by definition and must run at once.
+  allowSameChannel = false,
 ) {
-  const sameChannel = active.find((item) =>
+  const sameChannel = allowSameChannel ? undefined : active.find((item) =>
     item.channel === channel && (item.channel_participant_id ?? null) === participantId);
   if (sameChannel) {
     return { status: 409 as const, error: "这条通道上一段还在生成中，等它进入直播队列后再继续", generation: sameChannel };
@@ -927,7 +932,7 @@ async function promptsForViewerInput({
 // timeline rather than on any single viewer's instruction.
 // The opening frame is the END of a contestant's shot. Without saying so, the model just replays
 // the beat that already aired — the cutaway has to be told that time moves on.
-async function expandDirectorCut(sourceStory: string, timeline: string[], lead: string, condition: string) {
+async function expandDirectorCut(sourceStory: string, timeline: string[], lead: string, condition: string, directive?: string) {
   const beatSeconds = Math.round(LIVE_VIDEO_DURATION_SECONDS / 3);
   try {
     const shot = await miniMaxChat(
@@ -949,7 +954,8 @@ async function expandDirectorCut(sourceStory: string, timeline: string[], lead: 
         sourceStory ? `The frame we open on is the end of: ${sourceStory}` : "The frame we open on is a contestant on a storm-lit coast.",
         timeline.length ? `Story so far: ${timeline.join(" ")}` : "This is early in the match.",
         `Contestant visible in the frame: ${lead} — ${condition}`,
-      ].join("\n"),
+        directive ? `The audience voted for this direction — it must actually happen: ${directive}` : "",
+      ].filter(Boolean).join("\n"),
       900,
     );
     return shot || "";
@@ -962,14 +968,17 @@ async function promptsForDirectorCut({
   participant,
   sourceStory,
   timeline,
+  directive,
 }: {
   participant: typeof participants.$inferSelect;
   sourceStory: string;
   timeline: string[];
+  /** The direction viewers voted this cut toward, when it came from a fork. */
+  directive?: string;
 }) {
   const recap = timeline.length ? `Story so far: ${timeline.join(" ")}` : "Story so far: the storm is closing in on the island and the contestants are still scattered.";
   const condition = contestantCondition(participant);
-  const expanded = await expandDirectorCut(sourceStory, timeline, participant.display_name, condition);
+  const expanded = await expandDirectorCut(sourceStory, timeline, participant.display_name, condition, directive);
   const sharedContinuity = [
     sourceStory
       ? `The opening frame is where ${participant.display_name}'s last shot ended: ${sourceStory}. That beat is over — this cutaway takes place after it.`
@@ -1092,6 +1101,10 @@ interface GenerationRequest {
   viewerPrompt?: string | null;
   sourceGenerationId?: number | null;
   openingFrameS3Uri?: string | null;
+  /** Set for a vote candidate: which fork it is, and the direction viewers were offered. */
+  voteRoundId?: number | null;
+  voteOption?: "a" | "b" | null;
+  voteCue?: string | null;
 }
 
 // The one place that decides which image opens a clip. A contestant channel is anchored by that
@@ -1152,7 +1165,7 @@ async function queueLiveGeneration(request: GenerationRequest, createdBy: string
   }
 
   const active = await activeGenerations(match.id);
-  const slotError = generationSlotError(active, request.channel, request.channelParticipantId);
+  const slotError = generationSlotError(active, request.channel, request.channelParticipantId, Boolean(request.voteRoundId));
   if (slotError) {
     const error = new Error(slotError.error);
     error.name = slotError.status === 409 ? "ConflictError" : "RateLimitError";
@@ -1168,6 +1181,10 @@ async function queueLiveGeneration(request: GenerationRequest, createdBy: string
     channel_participant_id: request.channelParticipantId,
     viewer_prompt: cleanText(request.viewerPrompt, VIEWER_PROMPT_MAX_CHARS) || null,
     source_generation_id: request.sourceGenerationId ?? null,
+    vote_round_id: request.voteRoundId ?? null,
+    vote_option: request.voteOption ?? null,
+    // Candidates stay out of the broadcast until the vote settles.
+    vote_state: request.voteRoundId ? "candidate" : null,
     prompt: JSON.stringify({
       promptVersion: LIVE_PROMPT_VERSION,
       awaitingPrompt: true,
@@ -1176,6 +1193,7 @@ async function queueLiveGeneration(request: GenerationRequest, createdBy: string
       ...(cleanText(request.keyframePrompt, 3500) ? { keyframePrompt: cleanText(request.keyframePrompt, 3500) } : {}),
       ...(cleanText(request.videoPrompt, 3500) ? { videoPrompt: cleanText(request.videoPrompt, 3500) } : {}),
       ...(cleanText(request.visualMemory, 1000) ? { visualMemory: cleanText(request.visualMemory, 1000) } : {}),
+      ...(cleanText(request.voteCue, 400) ? { voteCue: cleanText(request.voteCue, 400) } : {}),
     }),
     participant_ids: JSON.stringify(participantIds),
     duration_seconds: clamp(request.duration || LIVE_VIDEO_DURATION_SECONDS, LIVE_VIDEO_DURATION_SECONDS, 15),
@@ -1230,6 +1248,7 @@ async function startQueuedGeneration(generation: typeof generations.$inferSelect
     }
     : generation.channel === "director"
     ? await promptsForDirectorCut({
+      directive: cleanText(queuedPrompt.voteCue, 400),
       participant: lead,
       // The frame comes from sourceClip, so the written memory has to come from there too —
       // reading the director channel's own previous clip described a different shot entirely.
@@ -1471,37 +1490,145 @@ async function pickDirectorSource(matchId: number) {
   return candidates[0] ?? null;
 }
 
-// Chained off a tail frame landing: EdgeSpark has no scheduler, so the director line advances on the
-// back of the request that made new footage usable.
-async function maybeStartDirectorClip(matchId: number) {
+// Two forks the audience picks between. The labels are what viewers read; the cues are what the
+// video prompt is built from.
+async function directionOptions(sourceStory: string, timeline: string[], lead: string) {
+  const fallback = {
+    a: { label: "继续推进", cue: "press on along the current route despite the weather closing in" },
+    b: { label: "转向避险", cue: "break off and head for cover as the storm front arrives" },
+  };
+  try {
+    const written = await miniMaxChat(
+      [
+        "你在为一档荒岛生存真人秀设计观众投票。",
+        "根据当前局势，给出两个截然不同、都合理的下一步走向，让观众二选一。",
+        "严格按这个格式输出两行，不要任何其他内容：",
+        "A|中文标签(不超过8字)|one short English line describing what happens",
+        "B|中文标签(不超过8字)|one short English line describing what happens",
+        "两个走向必须真的不同（不同的地点、不同的风险、不同的目标），不要只是措辞差异。",
+      ].join("\n"),
+      [
+        sourceStory ? `刚刚播出的画面：${sourceStory}` : "开场：风暴正在逼近荒岛。",
+        timeline.length ? `故事时间线：${timeline.join(" ")}` : "",
+        `画面中的选手：${lead}`,
+      ].filter(Boolean).join("\n"),
+      400,
+    );
+    const rows = written.split("\n").map((line) => line.split("|").map((part) => part.trim()));
+    const a = rows.find((row) => row[0]?.toUpperCase() === "A");
+    const b = rows.find((row) => row[0]?.toUpperCase() === "B");
+    if (a?.[1] && a[2] && b?.[1] && b[2]) {
+      return {
+        a: { label: cleanText(a[1], 20), cue: cleanText(a[2], 400) },
+        b: { label: cleanText(b[1], 20), cue: cleanText(b[2], 400) },
+      };
+    }
+    return fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+async function activeDirectorRound(matchId: number) {
+  const [round] = await db.select().from(directorRounds)
+    .where(and(eq(directorRounds.match_id, matchId), eq(directorRounds.status, "voting")))
+    .orderBy(desc(directorRounds.id))
+    .limit(1);
+  return round ?? null;
+}
+
+// Opens the next fork: both candidates are generated during the vote so the winner can air as soon
+// as the current clip ends. The loser is kept rather than deleted.
+async function openDirectorRound(matchId: number) {
   try {
     requireMiniMax();
+    if (await activeDirectorRound(matchId)) return null;
+    // Several pollers can clear the check above at once, so also refuse if a round was opened a
+    // moment ago. Cheaper than a lock and the window only has to cover the poll interval.
+    const [recent] = await db.select({ id: directorRounds.id }).from(directorRounds).where(and(
+      eq(directorRounds.match_id, matchId),
+      sql`${directorRounds.created_at} >= datetime('now', '-30 seconds')`,
+    )).limit(1);
+    if (recent) return null;
     const active = await activeGenerations(matchId);
-    if (generationSlotError(active, "director", null)) return null;
-    const source = await pickDirectorSource(matchId);
-    if (!source?.channel_participant_id || !source.thumbnail_url) return null;
-    const [participant] = await db.select({ id: participants.id }).from(participants)
-      .where(eq(participants.id, source.channel_participant_id)).limit(1);
-    if (!participant) return null;
-    // Only queued here — the prompt work happens on a later sync, so the tail-frame upload that
-    // triggered this returns immediately.
-    //
-    // The opening frame is that clip's tail frame, so whoever was in it is in this one. Taking only
-    // the channel owner would drop a co-star who is visibly still on screen.
-    const inherited = parseParticipantIds(source.participant_ids);
-    return await queueLiveGeneration({
+    if (active.length >= MAX_CONCURRENT_GENERATIONS - 1) return null;
+
+    // Continue the director line itself; fall back to a contestant clip for a cold start.
+    const source = await latestChannelClip(matchId, "director", null) ?? await pickDirectorSource(matchId);
+    if (!source?.thumbnail_url) return null;
+    // A director clip has no channel owner of its own, so read the lead off its cast — otherwise the
+    // line can never continue itself and only a contestant clip could ever open a fork.
+    const leadId = source.channel_participant_id ?? parseParticipantIds(source.participant_ids)[0] ?? null;
+    if (leadId == null) return null;
+    const [lead] = await db.select().from(participants).where(eq(participants.id, leadId)).limit(1);
+    if (!lead) return null;
+
+    const timeline = await recentSummaries(matchId, 4);
+    const options = await directionOptions(storyTextFromGeneration(source), timeline, lead.display_name);
+    const [round] = await db.insert(directorRounds).values({
+      match_id: matchId,
+      source_generation_id: source.id,
+      option_a_label: options.a.label,
+      option_b_label: options.b.label,
+      option_a_cue: options.a.cue,
+      option_b_cue: options.b.cue,
+      closes_at: new Date(Date.now() + VOTE_WINDOW_SECONDS * 1000).toISOString(),
+    }).returning();
+
+    try {
+      await queueCandidates(round.id, source, options);
+    } catch {
+      // A round with no candidates would settle empty and immediately open another, so roll it back.
+      await db.delete(directorRounds).where(eq(directorRounds.id, round.id));
+      return null;
+    }
+    return round;
+  } catch {
+    return null;
+  }
+}
+
+async function queueCandidates(
+  roundId: number,
+  source: typeof generations.$inferSelect,
+  options: { a: { label: string; cue: string }; b: { label: string; cue: string } },
+) {
+  for (const option of ["a", "b"] as const) {
+    await queueLiveGeneration({
       channel: "director",
       channelParticipantId: null,
-      participantIds: inherited.length ? inherited : [participant.id],
+      participantIds: parseParticipantIds(source.participant_ids),
       sourceGenerationId: source.id,
       keyframePrompt: "",
       videoPrompt: "",
       visualMemory: "",
       duration: LIVE_VIDEO_DURATION_SECONDS,
-    }, "director:auto");
-  } catch {
-    // A stalled director line must never break the request that fed it a tail frame.
-    return null;
+      voteRoundId: roundId,
+      voteOption: option,
+      voteCue: options[option].cue,
+    }, "director:vote");
+  }
+}
+
+// Settling is idempotent: the conditional update means concurrent pollers cannot both resolve a
+// round and mark two winners.
+async function settleDirectorRounds(matchId: number) {
+  const due = await db.select().from(directorRounds).where(and(
+    eq(directorRounds.match_id, matchId),
+    eq(directorRounds.status, "voting"),
+    lte(directorRounds.closes_at, new Date().toISOString()),
+  ));
+  for (const round of due) {
+    const winner = round.votes_b > round.votes_a ? "b" : "a";
+    const claimed = await db.update(directorRounds)
+      .set({ status: "settled", winner })
+      .where(and(eq(directorRounds.id, round.id), eq(directorRounds.status, "voting")))
+      .returning({ id: directorRounds.id });
+    if (claimed.length === 0) continue;
+    await db.update(generations).set({ vote_state: "winner" })
+      .where(and(eq(generations.vote_round_id, round.id), eq(generations.vote_option, winner)));
+    await db.update(generations).set({ vote_state: "discarded" })
+      .where(and(eq(generations.vote_round_id, round.id), ne(generations.vote_option, winner)));
   }
 }
 
@@ -1598,12 +1725,24 @@ const app = new Hono()
   .get("/api/public/health", (c) => c.json({ ok: true, service: "tomato-live" }))
   .get("/api/public/live", async (c) => {
     const match = await ensureLiveMatch();
+    // Cheap and idempotent. Opening the next fork is left to the tail-frame upload, since it costs
+    // an LLM call and would make this read slow.
+    await settleDirectorRounds(match.id);
+    // Opening a fork is awaited: c.executionCtx is not available in this runtime, and a promise left
+    // unawaited would be cancelled when the response is sent. The guards inside make it a couple of
+    // cheap queries on the vast majority of polls, and only the poll that actually opens a fork pays
+    // for the LLM call.
+    await openDirectorRound(match.id);
     const [roster, allEvents, clips, pendingGenerations] = await Promise.all([
       db.select().from(participants)
         .where(and(eq(participants.match_id, match.id), isNotNull(participants.character_draft_id)))
         .orderBy(desc(participants.score)),
       db.select().from(matchEvents).where(eq(matchEvents.match_id, match.id)).orderBy(desc(matchEvents.id)).limit(50),
-      db.select().from(generations).where(and(eq(generations.match_id, match.id), eq(generations.stage, "completed"))).orderBy(desc(generations.id)).limit(60),
+      db.select().from(generations).where(and(
+        eq(generations.match_id, match.id),
+        eq(generations.stage, "completed"),
+        or(isNull(generations.vote_state), eq(generations.vote_state, "winner")),
+      )).orderBy(desc(generations.id)).limit(60),
       db.select().from(generations)
         .where(and(eq(generations.match_id, match.id), inArray(generations.stage, ["queued", "keyframe", "video"])))
         .orderBy(desc(generations.id)),
@@ -1648,6 +1787,25 @@ const app = new Hono()
       created_at: item.created_at,
     }));
     const pendingGeneration = pendingList[0] ?? null;
+
+    const round = await activeDirectorRound(match.id);
+    const myVote = round
+      ? (await db.select({ option: directorVotes.option }).from(directorVotes).where(and(
+        eq(directorVotes.round_id, round.id),
+        eq(directorVotes.voter_hash, await sha256(requestFingerprint(c))),
+      )).limit(1))[0]?.option ?? null
+      : null;
+    const directorVote = round
+      ? {
+        id: round.id,
+        closes_at: round.closes_at,
+        options: [
+          { key: "a" as const, label: round.option_a_label, votes: round.votes_a },
+          { key: "b" as const, label: round.option_b_label, votes: round.votes_b },
+        ],
+        my_vote: myVote,
+      }
+      : null;
     return c.json({
       match,
       participants: rosterWithUrls,
@@ -1656,6 +1814,7 @@ const app = new Hono()
       story_choices: storyChoices,
       pending_generation: pendingGeneration,
       pending_generations: pendingList,
+      director_vote: directorVote,
       tail_frame_wanted: tailFrameWanted,
       generated_at: new Date().toISOString(),
     });
@@ -1705,6 +1864,31 @@ const app = new Hono()
     headers.set("cache-control", "public, max-age=31536000, immutable");
     return new Response(upstream.body, { status: 200, headers });
   })
+  .post("/api/public/director/vote", async (c) => {
+    const data = asObject(await c.req.json().catch(() => ({})));
+    const roundId = Number(data.roundId);
+    const option = cleanText(data.option, 1);
+    if (!Number.isInteger(roundId) || (option !== "a" && option !== "b")) {
+      return c.json({ error: "投票请求无效" }, 400);
+    }
+    const [round] = await db.select().from(directorRounds).where(eq(directorRounds.id, roundId)).limit(1);
+    if (!round || round.status !== "voting" || round.closes_at <= new Date().toISOString()) {
+      return c.json({ error: "这一轮投票已经结束" }, 409);
+    }
+    // One vote per viewer per round; the unique index is what actually enforces it.
+    const voterHash = await sha256(requestFingerprint(c));
+    const inserted = await db.insert(directorVotes)
+      .values({ round_id: roundId, voter_hash: voterHash, option })
+      .onConflictDoNothing()
+      .returning({ id: directorVotes.id });
+    if (inserted.length === 0) return c.json({ ok: true, alreadyVoted: true });
+    await db.update(directorRounds)
+      .set(option === "a"
+        ? { votes_a: sql`${directorRounds.votes_a} + 1` }
+        : { votes_b: sql`${directorRounds.votes_b} + 1` })
+      .where(eq(directorRounds.id, roundId));
+    return c.json({ ok: true });
+  })
   .post("/api/public/clips/:id/tail-frame", async (c) => {
     const id = Number(c.req.param("id"));
     if (!Number.isInteger(id) || id <= 0) return c.json({ error: "无效的片段 ID" }, 400);
@@ -1724,9 +1908,10 @@ const app = new Hono()
       .where(and(eq(generations.id, id), isNull(generations.thumbnail_url)))
       .returning({ id: generations.id });
     if (claimed.length === 0) return c.json({ ok: true, skipped: true });
-    // This frame is exactly what the director channel was waiting for.
-    const director = clip.channel === "participant" ? await maybeStartDirectorClip(clip.match_id) : null;
-    return c.json({ ok: true, directorGenerationId: director?.id ?? null });
+    // Any landed tail frame can move the director line on: a contestant clip seeds a cold start,
+    // a director clip supplies the opening frame for the next fork.
+    const round = await openDirectorRound(clip.match_id);
+    return c.json({ ok: true, voteRoundId: round?.id ?? null });
   })
   .post("/api/public/avatar/presign", async (c) => {
     const data = asObject(await c.req.json().catch(() => ({})));

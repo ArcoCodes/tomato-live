@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `director_rounds_one_open` ON `director_rounds` (`match_id`) WHERE status = 'voting';
