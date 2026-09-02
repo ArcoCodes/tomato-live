@@ -1910,14 +1910,55 @@ const app = new Hono()
     const match = await ensureLiveMatch();
     const [houseTally] = await db.select({ n: sql<number>`count(*)` }).from(generations)
       .where(and(eq(generations.match_id, match.id), sql`${generations.created_by} like 'house:%'`));
-    const [running] = await db.select({ n: sql<number>`count(*)` }).from(generations)
-      .where(and(eq(generations.match_id, match.id), inArray(generations.stage, ["queued", "keyframe", "video"])));
+    const inFlight = await db.select().from(generations)
+      .where(and(eq(generations.match_id, match.id), inArray(generations.stage, ["queued", "keyframe", "video"])))
+      .orderBy(desc(generations.id));
+
+    const roster = await db.select({ id: participants.id, display_name: participants.display_name })
+      .from(participants).where(eq(participants.match_id, match.id));
+    const nameOf = new Map(roster.map((item) => [item.id, item.display_name]));
+    const cast = (ids: number[]) => ids.map((id) => nameOf.get(id) ?? `#${id}`);
+
+    const waiting = await db.select().from(chatMessages)
+      .where(and(eq(chatMessages.match_id, match.id), isNull(chatMessages.consumed_at)))
+      .orderBy(chatMessages.id)
+      .limit(40);
+    const claimed = await db.select().from(chatMessages)
+      .where(and(eq(chatMessages.match_id, match.id), isNotNull(chatMessages.consumed_at)))
+      .orderBy(desc(chatMessages.id))
+      .limit(20);
+
+    const stageOf = new Map(inFlight.map((item) => [item.id, item.stage]));
+    const line = (row: typeof chatMessages.$inferSelect) => ({
+      id: row.id,
+      display_name: row.display_name,
+      body: row.body,
+      mentions: cast(parseParticipantIds(row.mentions)),
+      generation_id: row.generation_id,
+      stage: row.generation_id != null ? stageOf.get(row.generation_id) ?? "completed" : null,
+      created_at: row.created_at,
+      consumed_at: row.consumed_at,
+    });
+
     return c.json({
       current: tierOf(match).key,
       tiers: Object.values(GENERATION_TIERS),
-      running: Number(running?.n ?? 0),
+      running: inFlight.length,
       houseUsed: Number(houseTally?.n ?? 0),
       houseLimit: HOUSE_CAST_MAX_CLIPS,
+      queue: {
+        waiting: waiting.map(line),
+        // A message is "filming" only while the clip it became is still rendering.
+        filming: claimed.filter((row) => row.generation_id != null && stageOf.has(row.generation_id)).map(line),
+        aired: claimed.filter((row) => row.generation_id == null || !stageOf.has(row.generation_id)).slice(0, 8).map(line),
+        // Everything else in flight is the show filming itself, with nobody's line behind it.
+        selfDriven: inFlight.filter((item) => !claimed.some((row) => row.generation_id === item.id)).map((item) => ({
+          id: item.id,
+          stage: item.stage,
+          channel: item.channel,
+          cast: cast(parseParticipantIds(item.participant_ids)),
+        })),
+      },
     });
   })
   .post("/api/admin/generation-tier", async (c) => {

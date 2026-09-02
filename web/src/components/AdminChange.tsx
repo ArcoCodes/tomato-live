@@ -11,13 +11,44 @@ interface Tier {
   gapSeconds: number;
 }
 
+interface QueueLine {
+  id: number;
+  display_name: string;
+  body: string;
+  mentions: string[];
+  generation_id: number | null;
+  stage: string | null;
+  created_at: string;
+  consumed_at: string | null;
+}
+
+interface SelfDriven {
+  id: number;
+  stage: string;
+  channel: string;
+  cast: string[];
+}
+
 interface TierState {
   current: string;
   tiers: Tier[];
   running: number;
   houseUsed: number;
   houseLimit: number;
+  queue: {
+    waiting: QueueLine[];
+    filming: QueueLine[];
+    aired: QueueLine[];
+    selfDriven: SelfDriven[];
+  };
 }
+
+const STAGE_LABEL: Record<string, string> = {
+  queued: "排队中",
+  keyframe: "写分镜",
+  video: "渲染中",
+  completed: "已上镜",
+};
 
 function pace(tier: Tier) {
   if (tier.gapSeconds >= 3600) return `每 ${Math.round(tier.gapSeconds / 3600)} 小时一段`;
@@ -52,6 +83,8 @@ export function AdminChange() {
 
   useEffect(() => {
     void load();
+    const timer = window.setInterval(() => void load(), 6000);
+    return () => window.clearInterval(timer);
   }, [load, isAuthenticated]);
 
   async function pick(key: string) {
@@ -124,6 +157,61 @@ export function AdminChange() {
               </button>
             ))}
           </div>
+
+          <section className="admin-queue">
+            <h2>发言队列</h2>
+
+            <div className="admin-queue-group">
+              <span className="admin-queue-head">待拍 <b>{state.queue.waiting.length}</b></span>
+              {state.queue.waiting.length === 0
+                ? <p className="admin-queue-empty">队列是空的，导演会用默认剧本继续推进。</p>
+                : state.queue.waiting.map((line) => (
+                  <div className="admin-queue-line" key={line.id}>
+                    <span>{line.display_name}</span>
+                    <p>{line.body}</p>
+                    {line.mentions.length ? <em>点名 {line.mentions.join("、")}</em> : null}
+                  </div>
+                ))}
+            </div>
+
+            {state.queue.filming.length ? (
+              <div className="admin-queue-group">
+                <span className="admin-queue-head">正在拍 <b>{state.queue.filming.length}</b></span>
+                {state.queue.filming.map((line) => (
+                  <div className="admin-queue-line is-filming" key={line.id}>
+                    <span>{line.display_name}</span>
+                    <p>{line.body}</p>
+                    <em>{STAGE_LABEL[line.stage ?? ""] ?? line.stage} · 片段 #{line.generation_id}</em>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {state.queue.selfDriven.length ? (
+              <div className="admin-queue-group">
+                <span className="admin-queue-head">自动推进 <b>{state.queue.selfDriven.length}</b></span>
+                {state.queue.selfDriven.map((item) => (
+                  <div className="admin-queue-line is-auto" key={item.id}>
+                    <p>{item.channel === "director" ? "导播镜头" : `${item.cast.join("、")} 的视角`}</p>
+                    <em>{STAGE_LABEL[item.stage] ?? item.stage} · 片段 #{item.id}</em>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {state.queue.aired.length ? (
+              <div className="admin-queue-group">
+                <span className="admin-queue-head">最近上镜</span>
+                {state.queue.aired.map((line) => (
+                  <div className="admin-queue-line is-aired" key={line.id}>
+                    <span>{line.display_name}</span>
+                    <p>{line.body}</p>
+                    <em>片段 #{line.generation_id}</em>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </section>
 
           {note ? <p className="admin-note">{note}</p> : null}
           {state.houseUsed >= state.houseLimit ? (
