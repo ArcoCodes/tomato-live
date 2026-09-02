@@ -156,8 +156,8 @@ export function ActionBar({ participant, roster, myCharacters, onSwitchCharacter
   const visibleChoices = choices.length ? choices : fallbackChoices;
   const hints = [mentionable.length ? "@ 拉人进画面" : "", linkOffers.length ? "/ 接续别人的画面" : ""].filter(Boolean);
   const busyText = pendingGeneration?.stage === "video"
-    ? `正在生成 ${CLIP_SECONDS} 秒画面，很快就好…`
-    : "正在把你的指令扩写成分镜…";
+    ? `岛上画面正在传回，${CLIP_SECONDS} 秒的片段，很快就好…`
+    : "正在锁定岛上的信号，准备记录这一步…";
   const statusText = notice
     || (channelBusy ? busyText : hints.length
       ? `写下你想让角色做什么，输入 ${hints.join("、")}`
@@ -263,7 +263,7 @@ export function ActionBar({ participant, roster, myCharacters, onSwitchCharacter
             onKeyDown={handleKeyDown}
           />
           <button type="button" className="primary-action" disabled={locked || draft.trim().length < 2} onClick={() => void submit()}>
-            {busy ? "提交中" : channelBusy ? (pendingGeneration?.stage === "video" ? "生成画面中" : "编写分镜中") : "生成这一段"}
+            {busy ? "发送指令中" : channelBusy ? (pendingGeneration?.stage === "video" ? "画面回传中" : "正在锁定信号") : "生成这一段"}
           </button>
         </div>
         <p className="action-notice">{statusText}</p>

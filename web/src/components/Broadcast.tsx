@@ -69,8 +69,8 @@ function GenerationProgress({ stage }: { stage: "queued" | "keyframe" | "video" 
         />
       </div>
       <div className="gen-progress-copy">
-        <strong>{writing ? "编写分镜中" : "生成画面中"}</strong>
-        <span>{writing ? "正在把你的指令扩写成完整分镜" : "MiniMax 正在渲染，约 20 秒"}</span>
+        <strong>{writing ? "正在锁定信号" : "画面回传中"}</strong>
+        <span>{writing ? "岛上的机位还在对准，马上就有画面" : "岛上画面正在传回，约 20 秒"}</span>
       </div>
     </div>
   );
@@ -467,7 +467,7 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
             </span>
             <span className="channel-copy">
               <strong>{item.label}</strong>
-              <small className={item.pending ? "is-pending" : ""}>{item.pending ? (item.pendingStage === "video" ? "生成画面中…" : "编写分镜中…") : item.detail}</small>
+              <small className={item.pending ? "is-pending" : ""}>{item.pending ? (item.pendingStage === "video" ? "画面回传中…" : "正在锁定信号…") : item.detail}</small>
             </span>
           </button>
         ))}
