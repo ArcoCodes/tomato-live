@@ -1193,9 +1193,6 @@ async function startQueuedGeneration(generation: typeof generations.$inferSelect
     .where(and(eq(participants.match_id, generation.match_id), inArray(participants.id, participantIds)));
   if (selected.length === 0) throw new Error("参赛者列表已经变化，请刷新后重试");
 
-  const lead = selected.find((item) => item.id === generation.channel_participant_id) ?? selected[0];
-  const guests = selected.filter((item) => item.id !== lead.id);
-
   // A link continues from a clip this contestant was written into; its tail frame holds both people.
   let sourceClip: typeof generations.$inferSelect | null = null;
   if (generation.source_generation_id != null) {
@@ -1204,6 +1201,14 @@ async function startQueuedGeneration(generation: typeof generations.$inferSelect
     sourceClip = row ?? null;
   }
   const openingFrameS3Uri = sourceClip?.thumbnail_url ?? null;
+
+  // A director cut has no channel owner of its own, so its lead is whoever owned the clip that
+  // supplied the frame.
+  const leadId = generation.channel === "director"
+    ? sourceClip?.channel_participant_id ?? null
+    : generation.channel_participant_id;
+  const lead = selected.find((item) => item.id === leadId) ?? selected[0];
+  const guests = selected.filter((item) => item.id !== lead.id);
 
   const latestClip = await latestChannelClip(
     generation.match_id,
@@ -1481,10 +1486,14 @@ async function maybeStartDirectorClip(matchId: number) {
     if (!participant) return null;
     // Only queued here — the prompt work happens on a later sync, so the tail-frame upload that
     // triggered this returns immediately.
+    //
+    // The opening frame is that clip's tail frame, so whoever was in it is in this one. Taking only
+    // the channel owner would drop a co-star who is visibly still on screen.
+    const inherited = parseParticipantIds(source.participant_ids);
     return await queueLiveGeneration({
       channel: "director",
       channelParticipantId: null,
-      participantIds: [participant.id],
+      participantIds: inherited.length ? inherited : [participant.id],
       sourceGenerationId: source.id,
       keyframePrompt: "",
       videoPrompt: "",
@@ -1998,6 +2007,7 @@ const app = new Hono()
     // one real composition, which no amount of identity-lock text can reproduce.
     const linkFromId = Number(data.linkFromGenerationId);
     let linkedSourceId: number | null = null;
+    let linkedCast: string | null = null;
     if (Number.isInteger(linkFromId) && linkFromId > 0) {
       const [linked] = await db.select().from(generations).where(eq(generations.id, linkFromId)).limit(1);
       const linkedIds = parseParticipantIds(linked?.participant_ids ?? null);
@@ -2009,6 +2019,7 @@ const app = new Hono()
         && linked.channel_participant_id !== participant.id;
       if (!usable) return c.json({ error: "这一段不能作为你的起始画面" }, 400);
       linkedSourceId = linked!.id;
+      linkedCast = linked!.participant_ids;
     }
     // MiniMax takes at most 3 people, and the channel owner always holds one of those slots.
     const guests = mentionedParticipants(viewerPrompt, roster, participant.id).slice(0, 2);
@@ -2039,10 +2050,12 @@ const app = new Hono()
         : `${viewerPrompt} 已进入 ${participant.display_name} 的视角通道。`,
     });
     try {
+      // Continuing from a linked clip means opening on a frame that already holds its whole cast.
+      const carriedOver = linkedSourceId ? parseParticipantIds(linkedCast) : [];
       const generation = await queueLiveGeneration({
         channel: "participant",
         channelParticipantId: participant.id,
-        participantIds: [participant.id, ...guests.map((item) => item.id)],
+        participantIds: [...new Set([participant.id, ...guests.map((item) => item.id), ...carriedOver])],
         sourceGenerationId: linkedSourceId,
         viewerPrompt,
         keyframePrompt: "",
