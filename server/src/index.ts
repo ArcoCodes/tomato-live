@@ -20,7 +20,6 @@ const CHARACTER_RATE_LIMIT_PER_HOUR = 3;
 // Everyone gets one contestant; the host account runs the show and needs several.
 const CHARACTER_LIMIT_PER_USER = 1;
 const CHARACTER_LIMIT_HOST = 12;
-const DIRECTOR_RATE_LIMIT_PER_HOUR = 6;
 // Mid-dark hues: they sit on white with enough contrast to carry white text in the avatar tile.
 const ACCENTS = ["#e64b22", "#1d7874", "#b4530a", "#4a4e9c", "#a6273f"];
 const LIVE_PROMPT_VERSION = "channel-v3";
@@ -2074,26 +2073,6 @@ const app = new Hono()
       return c.json({ error: message }, liveGenerationErrorStatus(error));
     }
   })
-  .post("/api/public/generations", async (c) => {
-    try {
-      const data = asObject(await c.req.json().catch(() => ({})));
-      const createdBy = auth.user?.id ?? `internal:${await sha256(requestFingerprint(c))}`;
-      // This endpoint spends MiniMax credit and takes a caller-supplied prompt, so it needs a cap.
-      const recent = await db.select({ id: generations.id }).from(generations).where(and(
-        eq(generations.created_by, createdBy),
-        ne(generations.stage, "failed"),
-        sql`${generations.created_at} >= datetime('now', '-1 hour')`,
-      ));
-      if (recent.length >= DIRECTOR_RATE_LIMIT_PER_HOUR) {
-        return c.json({ error: `一小时内最多手动生成 ${DIRECTOR_RATE_LIMIT_PER_HOUR} 段，请稍后再试` }, 429);
-      }
-      const generation = await queueLiveGeneration(directorRequestFrom(data), createdBy);
-      return c.json({ generation, message: "已排队，正在编写分镜" }, 201);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "生成任务提交失败";
-      return c.json({ error: message }, liveGenerationErrorStatus(error));
-    }
-  })
   .post("/api/public/generations/:id/sync", async (c) => {
     try {
       const result = await syncLiveGeneration(Number(c.req.param("id")));
@@ -2133,7 +2112,7 @@ const app = new Hono()
     }
   })
   .post("/api/director/generations", async (c) => {
-    await requireDirector();
+    if (!isHostAccount()) return c.json({ error: "当前账号没有导演权限" }, 403);
     try {
       const data = asObject(await c.req.json().catch(() => ({})));
       const generation = await queueLiveGeneration(directorRequestFrom(data), auth.user!.id);

@@ -86,6 +86,7 @@ function App() {
   const [loginOpen, setLoginOpen] = useState(false);
   const [accountCharacterIds, setAccountCharacterIds] = useState<number[]>([]);
   const [quota, setQuota] = useState<{ used: number; limit: number; remaining: number } | null>(null);
+  const [isHost, setIsHost] = useState(false);
   const [activeChannel, setActiveChannel] = useState(DIRECTOR_CHANNEL);
   const { user, isAuthenticated, signOut } = useAuth();
 
@@ -224,6 +225,7 @@ function App() {
     if (!isAuthenticated) {
       setAccountCharacterIds([]);
       setQuota(null);
+      setIsHost(false);
       return;
     }
     let active = true;
@@ -234,6 +236,7 @@ function App() {
         if (!active || !response.ok) return;
         setAccountCharacterIds((result.characters ?? []).map((item: { id: number }) => item.id));
         setQuota(result.quota ?? null);
+        setIsHost(Boolean(result.isHost));
       } catch {
         // Spectator mode still works without this.
       }
@@ -309,7 +312,8 @@ function App() {
         </div>
         <div className="topbar-actions">
           <span className="viewer-count"><i /> {live.match.viewers.toLocaleString()} WATCHING</span>
-          <button className="text-action" onClick={openDirector}>生成下一段</button>
+          {/* Manual cuts are a host tool: the director channel advances on its own. */}
+          {isHost ? <button className="text-action" onClick={openDirector}>生成下一段</button> : null}
           <button className="join-action" onClick={openJoin}>{myParticipant ? "角色档案" : "加入挑战"}<span>↗</span></button>
         </div>
       </header>

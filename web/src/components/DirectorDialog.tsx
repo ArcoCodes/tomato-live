@@ -51,7 +51,8 @@ export function DirectorDialog({ open, onClose, participants, pendingGeneration,
     setError("");
     setStage("正在准备首帧并提交 MiniMax 官方任务");
     try {
-      const response = await client.api.fetch("/api/public/generations", {
+      // Host-only now: the public create endpoint took an arbitrary prompt from anyone.
+      const response = await client.api.fetch("/api/director/generations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ participantIds: selected, keyframePrompt, videoPrompt, duration: CLIP_SECONDS }),
