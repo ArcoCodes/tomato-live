@@ -83,7 +83,6 @@ function App() {
   const [controls, setControls] = useState<PlayerControl[]>(() => readControls());
   const [loginOpen, setLoginOpen] = useState(false);
   const [accountCharacterIds, setAccountCharacterIds] = useState<number[]>([]);
-  const [quota, setQuota] = useState<{ used: number; limit: number; remaining: number } | null>(null);
   const [isHost, setIsHost] = useState(false);
   const [activeChannel, setActiveChannel] = useState(DIRECTOR_CHANNEL);
   const { user, isAuthenticated, signOut } = useAuth();
@@ -224,7 +223,6 @@ function App() {
   useEffect(() => {
     if (!isAuthenticated) {
       setAccountCharacterIds([]);
-      setQuota(null);
       setIsHost(false);
       return;
     }
@@ -235,7 +233,6 @@ function App() {
         const result = await response.json();
         if (!active || !response.ok) return;
         setAccountCharacterIds((result.characters ?? []).map((item: { id: number }) => item.id));
-        setQuota(result.quota ?? null);
         setIsHost(Boolean(result.isHost));
       } catch {
         // Spectator mode still works without this.
@@ -351,28 +348,7 @@ function App() {
           pendingGeneration={(live.pending_generations ?? []).find((item) => item.channel_participant_id === myParticipant.id) ?? null}
           onUpdated={() => refresh(true)}
         />
-      ) : ownedIds.length && myCharacters[0] ? (
-        <section className="spectator-bar">
-          <div>
-            <span className="eyebrow">SPECTATING</span>
-            <strong>{activeChannel === DIRECTOR_CHANNEL
-              ? "你正在看总导播画面"
-              : `你正在看 ${live.participants.find((item) => `p:${item.id}` === activeChannel)?.display_name ?? "其他选手"} 的视角`}</strong>
-          </div>
-          <p>切回自己的视角就能写下一条指令。</p>
-          <button onClick={() => setActiveChannel(`p:${myCharacters[0].id}`)}>
-            回到 {myCharacters[0].display_name} 的视角 <span>→</span>
-          </button>
-        </section>
-      ) : (
-        <section className="spectator-bar">
-          <div><span className="eyebrow">SPECTATOR MODE</span><strong>你正在以观众身份观看</strong></div>
-          <p>{quota && quota.remaining <= 0
-          ? `你的账号已创建 ${quota.used} 个角色，达到上限 ${quota.limit} 个。`
-          : "创建角色，下一轮就有机会进入直播画面。"}</p>
-          <button onClick={openJoin}>{isAuthenticated ? "创建参赛角色" : "登录后创建角色"} <span>→</span></button>
-        </section>
-      )}
+      ) : null}
 
       <footer>
         <span>© 2026 RENOISE LIVE / POWERED BY EDGESPARK + MINIMAX</span>
