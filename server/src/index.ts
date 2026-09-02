@@ -28,7 +28,6 @@ const ACCENTS = ["#e64b22", "#1d7874", "#b4530a", "#4a4e9c", "#a6273f"];
 const LIVE_PROMPT_VERSION = "channel-v3";
 // Older clips still carry usable visual memory, so they stay readable as continuity sources.
 const CONTINUABLE_PROMPT_VERSIONS = new Set(["textless-v2", LIVE_PROMPT_VERSION]);
-const MAX_CONCURRENT_GENERATIONS = 3;
 const VIEWER_PROMPT_MAX_CHARS = 300;
 const TAIL_FRAME_MAX_BYTES = 4 * 1024 * 1024;
 const SUMMARY_MODEL = "MiniMax-M2";
@@ -796,13 +795,14 @@ function generationSlotError(
   active: Array<typeof generations.$inferSelect>,
   channel: "director" | "participant",
   participantId: number | null,
+  concurrent: number,
 ) {
   const sameChannel = active.find((item) =>
     item.channel === channel && (item.channel_participant_id ?? null) === participantId);
   if (sameChannel) {
     return { status: 409 as const, error: "这条通道上一段还在生成中，等它进入直播队列后再继续", generation: sameChannel };
   }
-  if (active.length >= MAX_CONCURRENT_GENERATIONS) {
+  if (active.length >= concurrent) {
     return { status: 429 as const, error: "同时生成的片段已达上限，稍后再试", generation: null };
   }
   return null;
@@ -1222,7 +1222,7 @@ async function queueLiveGeneration(request: GenerationRequest, createdBy: string
   }
 
   const active = await activeGenerations(match.id);
-  const slotError = generationSlotError(active, request.channel, request.channelParticipantId);
+  const slotError = generationSlotError(active, request.channel, request.channelParticipantId, tierOf(match).concurrent);
   if (slotError) {
     const error = new Error(slotError.error);
     error.name = slotError.status === 409 ? "ConflictError" : "RateLimitError";
@@ -1555,26 +1555,84 @@ async function pickDirectorSource(matchId: number) {
 // ordinary contestant channels — same identity anchoring, same tail-frame chain — which is what lets
 // the director cut to them exactly as it cuts to a viewer's contestant, and what keeps the broadcast
 // moving when no viewer has asked for anything.
-const HOUSE_CAST_ACTIVE_SLOTS = 2;
-// Guardrails on a loop that would otherwise run for as long as one browser tab stays open.
-const HOUSE_CAST_MIN_GAP_SECONDS = 20;
-const HOUSE_CAST_MAX_CLIPS = 120;
+// A backstop against a runaway loop, not the cost control — that is the tier below, which the host
+// can move at any time. A cumulative cap is a one-way door: once reached the show stops for good
+// and only a redeploy restarts it.
+const HOUSE_CAST_MAX_CLIPS = 20000;
+
+// How hard the show films. Rendering is the whole cost of this project, so the host can throttle it
+// from /admin-change when nobody is watching rather than having to take the site down.
+type GenerationTierKey = "live" | "idle" | "hourly";
+interface GenerationTier {
+  key: GenerationTierKey;
+  label: string;
+  detail: string;
+  concurrent: number;
+  houseSlots: number;
+  gapSeconds: number;
+  // Low tiers pace the director on the same clock as the cast, so "one clip an hour" means one
+  // clip an hour in total, not one per line.
+  gapCoversDirector: boolean;
+}
+const GENERATION_TIERS: Record<GenerationTierKey, GenerationTier> = {
+  live: {
+    key: "live",
+    label: "直播档",
+    detail: "最多 3 段同时渲染，角色线 2 段并行，每 20 秒开新的一段。",
+    concurrent: 3,
+    houseSlots: 2,
+    gapSeconds: 20,
+    gapCoversDirector: false,
+  },
+  idle: {
+    key: "idle",
+    label: "低耗档",
+    detail: "一次只渲染 1 段，每分钟开一段。没什么人看的时候用这档。",
+    concurrent: 1,
+    houseSlots: 1,
+    gapSeconds: 60,
+    gapCoversDirector: true,
+  },
+  hourly: {
+    key: "hourly",
+    label: "休眠档",
+    detail: "一次只渲染 1 段，每小时开一段。几乎不产生费用，直播基本静止。",
+    concurrent: 1,
+    houseSlots: 1,
+    gapSeconds: 3600,
+    gapCoversDirector: true,
+  },
+};
+
+function tierOf(match: { generation_tier: string }) {
+  return GENERATION_TIERS[match.generation_tier as GenerationTierKey] ?? GENERATION_TIERS.live;
+}
+
+// Every auto-queued clip counts against the low tiers' clock, whichever line asked for it.
+async function autoQueuedWithin(matchId: number, seconds: number, housOnly: boolean) {
+  const [row] = await db.select({ n: sql<number>`count(*)` }).from(generations)
+    .where(and(
+      eq(generations.match_id, matchId),
+      housOnly ? sql`${generations.created_by} like 'house:%'` : sql`(${generations.created_by} like 'house:%' or ${generations.created_by} like 'director:%')`,
+      sql`${generations.created_at} >= datetime('now', ${`-${seconds} seconds`})`,
+    ));
+  return Number(row?.n ?? 0);
+}
 const HOUSE_CAST_CUE = "Take the next concrete step in your own plan on this island, and run into a new complication while doing it.";
 
-async function maybeAdvanceHouseCast(matchId: number) {
+async function maybeAdvanceHouseCast(match: typeof matches.$inferSelect) {
+  const matchId = match.id;
+  const tier = tierOf(match);
   try {
     requireMiniMax();
     const active = await activeGenerations(matchId);
     // Leave the rest of the queue for viewers: the house cast never fills it.
-    if (active.length >= HOUSE_CAST_ACTIVE_SLOTS) return null;
+    if (active.length >= tier.houseSlots) return null;
 
-    const [tally] = await db.select({
-      total: sql<number>`count(*)`,
-      recent: sql<number>`sum(case when ${generations.created_at} >= datetime('now', ${`-${HOUSE_CAST_MIN_GAP_SECONDS} seconds`}) then 1 else 0 end)`,
-    }).from(generations)
+    const [tally] = await db.select({ total: sql<number>`count(*)` }).from(generations)
       .where(and(eq(generations.match_id, matchId), sql`${generations.created_by} like 'house:%'`));
     if (Number(tally?.total ?? 0) >= HOUSE_CAST_MAX_CLIPS) return null;
-    if (Number(tally?.recent ?? 0) > 0) return null;
+    if (await autoQueuedWithin(matchId, tier.gapSeconds, !tier.gapCoversDirector) > 0) return null;
 
     const cast = await db.select().from(participants)
       .where(and(eq(participants.match_id, matchId), eq(participants.is_system, true)));
@@ -1611,11 +1669,14 @@ async function maybeAdvanceHouseCast(matchId: number) {
   }
 }
 
-async function maybeStartDirectorClip(matchId: number) {
+async function maybeStartDirectorClip(match: typeof matches.$inferSelect) {
+  const matchId = match.id;
+  const tier = tierOf(match);
   try {
     requireMiniMax();
     const active = await activeGenerations(matchId);
-    if (generationSlotError(active, "director", null)) return null;
+    if (generationSlotError(active, "director", null, tier.concurrent)) return null;
+    if (tier.gapCoversDirector && await autoQueuedWithin(matchId, tier.gapSeconds, false) > 0) return null;
     const source = await pickDirectorSource(matchId);
     if (!source?.channel_participant_id || !source.thumbnail_url) return null;
     const [participant] = await db.select({ id: participants.id }).from(participants)
@@ -1734,10 +1795,35 @@ function liveGenerationErrorStatus(error: unknown) {
 
 const app = new Hono()
   .get("/api/public/health", (c) => c.json({ ok: true, service: "tomato-live" }))
+  .get("/api/admin/generation-tier", async (c) => {
+    if (!isHostAccount()) return c.json({ error: "当前账号没有导演权限" }, 403);
+    const match = await ensureLiveMatch();
+    const [houseTally] = await db.select({ n: sql<number>`count(*)` }).from(generations)
+      .where(and(eq(generations.match_id, match.id), sql`${generations.created_by} like 'house:%'`));
+    const [running] = await db.select({ n: sql<number>`count(*)` }).from(generations)
+      .where(and(eq(generations.match_id, match.id), inArray(generations.stage, ["queued", "keyframe", "video"])));
+    return c.json({
+      current: tierOf(match).key,
+      tiers: Object.values(GENERATION_TIERS),
+      running: Number(running?.n ?? 0),
+      houseUsed: Number(houseTally?.n ?? 0),
+      houseLimit: HOUSE_CAST_MAX_CLIPS,
+    });
+  })
+  .post("/api/admin/generation-tier", async (c) => {
+    if (!isHostAccount()) return c.json({ error: "当前账号没有导演权限" }, 403);
+    const data = asObject(await c.req.json().catch(() => ({})));
+    const key = cleanText(data.tier, 16) as GenerationTierKey;
+    if (!GENERATION_TIERS[key]) return c.json({ error: "未知的生成档位" }, 400);
+    const match = await ensureLiveMatch();
+    await db.update(matches).set({ generation_tier: key }).where(eq(matches.id, match.id));
+    // Clips already rendering are paid for; the new tier applies to what gets queued next.
+    return c.json({ current: key, message: `已切换到${GENERATION_TIERS[key].label}，正在渲染的片段会先跑完` });
+  })
   .get("/api/public/live", async (c) => {
     const match = await ensureLiveMatch();
     // There is no scheduler here, so the house cast advances on the back of the viewer heartbeat.
-    await maybeAdvanceHouseCast(match.id);
+    await maybeAdvanceHouseCast(match);
     const [roster, allEvents, clips, pendingGenerations] = await Promise.all([
       db.select().from(participants)
         .where(and(
@@ -1871,7 +1957,8 @@ const app = new Hono()
       .returning({ id: generations.id });
     if (claimed.length === 0) return c.json({ ok: true, skipped: true });
     // This frame is exactly what the director channel was waiting for.
-    const director = clip.channel === "participant" ? await maybeStartDirectorClip(clip.match_id) : null;
+    const [clipMatch] = await db.select().from(matches).where(eq(matches.id, clip.match_id)).limit(1);
+    const director = clip.channel === "participant" && clipMatch ? await maybeStartDirectorClip(clipMatch) : null;
     return c.json({ ok: true, directorGenerationId: director?.id ?? null });
   })
   .post("/api/public/avatar/presign", async (c) => {
@@ -2153,7 +2240,7 @@ const app = new Hono()
 
     // Only this contestant's own channel has to be idle; other channels keep running in parallel.
     const active = await activeGenerations(match.id);
-    const slotError = generationSlotError(active, "participant", participant.id);
+    const slotError = generationSlotError(active, "participant", participant.id, tierOf(match).concurrent);
     if (slotError) return c.json({ error: slotError.error, generation: slotError.generation }, slotError.status);
 
     const roster = await db.select().from(participants).where(and(

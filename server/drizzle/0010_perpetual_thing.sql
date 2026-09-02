@@ -1,0 +1,1 @@
+ALTER TABLE `matches` ADD `generation_tier` text DEFAULT 'live' NOT NULL;

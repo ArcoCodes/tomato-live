@@ -22,6 +22,9 @@ export const matches = sqliteTable("matches", {
   current_round: integer("current_round").notNull().default(1),
   zone: text("zone").notNull().default("北岸雨林"),
   viewers: integer("viewers").notNull().default(0),
+  // How hard the show films: how many clips may render at once and how long to wait between them.
+  // The host switches this from /admin-change when nobody is watching.
+  generation_tier: text("generation_tier", { enum: ["live", "idle", "hourly"] }).notNull().default("live"),
   started_at: text("started_at").notNull().default(sql`(current_timestamp)`),
   created_at: text("created_at").notNull().default(sql`(current_timestamp)`),
 }, (table) => [
