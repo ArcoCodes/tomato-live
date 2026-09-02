@@ -4,6 +4,7 @@ import { Broadcast, type ChannelTab } from "@/components/Broadcast";
 import { DirectorDialog } from "@/components/DirectorDialog";
 import { EventFeed } from "@/components/EventFeed";
 import { JoinDialog } from "@/components/JoinDialog";
+import { MatchTimeline } from "@/components/MatchTimeline";
 import { LoginDialog } from "@/components/LoginDialog";
 import { Roster } from "@/components/Roster";
 import { useAuth } from "@/hooks/useAuth";
@@ -325,7 +326,7 @@ function App() {
         <EventFeed events={live.events} />
       </main>
 
-      {myParticipant && control ? (
+      {myParticipant && control && activeChannel === `p:${myParticipant.id}` ? (
         <ActionBar
           participant={myParticipant}
           roster={live.participants}
@@ -336,6 +337,14 @@ function App() {
           choices={live.story_choices}
           pendingGeneration={(live.pending_generations ?? []).find((item) => item.channel_participant_id === myParticipant.id) ?? null}
           onUpdated={() => refresh(true)}
+        />
+      ) : myParticipant ? (
+        <MatchTimeline
+          participants={live.participants}
+          clips={live.clips}
+          activeChannel={activeChannel}
+          onSelectChannel={setActiveChannel}
+          onComposeChannel={{ key: `p:${myParticipant.id}`, label: myParticipant.display_name }}
         />
       ) : (
         <section className="spectator-bar">
