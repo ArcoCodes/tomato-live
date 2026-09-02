@@ -17,6 +17,7 @@ export interface Participant {
   archetype: string;
   accent: string;
   avatar_url: string | null;
+  portrait_url: string | null;
   status: ParticipantStatus;
   health: number;
   stamina: number;

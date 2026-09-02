@@ -1,0 +1,1 @@
+ALTER TABLE `participants` ADD `portrait_s3_uri` text;

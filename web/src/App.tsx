@@ -179,7 +179,7 @@ function App() {
         detail: count ? `${count} 段视角` : "尚无片段",
         pending: pending.some((item) => item.channel_participant_id === participant.id),
         pendingStage: pending.find((item) => item.channel_participant_id === participant.id)?.stage,
-        avatarUrl: participant.avatar_url,
+        avatarUrl: participant.portrait_url ?? participant.avatar_url,
       });
     }
     return tabs;

@@ -564,8 +564,8 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
                       zIndex: all.length - index,
                     } as React.CSSProperties}
                   >
-                    {member.avatar_url
-                      ? <img src={member.avatar_url} alt="" loading="lazy" />
+                    {(member.portrait_url ?? member.avatar_url)
+                      ? <img src={member.portrait_url ?? member.avatar_url!} alt="" loading="lazy" />
                       : <i>{member.display_name.slice(0, 1)}</i>}
                   </span>
                 ))}

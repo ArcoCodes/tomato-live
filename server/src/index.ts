@@ -1756,6 +1756,9 @@ const app = new Hono()
     const rosterWithUrls = await Promise.all(roster.map(async (participant) => ({
       ...participant,
       avatar_url: await avatarUrl(participant.avatar_s3_uri),
+      // Falls back to the sheet so a viewer-made contestant, which has no separate portrait, still
+      // shows a face everywhere the cast is displayed.
+      portrait_url: await avatarUrl(participant.portrait_s3_uri ?? participant.avatar_s3_uri),
       control_token_hash: undefined,
     })));
     const clipList = clips.map((clip) => ({

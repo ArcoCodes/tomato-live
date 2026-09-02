@@ -81,7 +81,7 @@ export function DirectorDialog({ open, onClose, participants, pendingGeneration,
           <div className="director-roster">
             {eligible.length ? eligible.map((participant) => (
               <button className={selected.includes(participant.id) ? "selected" : ""} onClick={() => toggleParticipant(participant.id)} key={participant.id}>
-                <img src={participant.avatar_url!} alt="" />
+                <img src={(participant.portrait_url ?? participant.avatar_url)!} alt="" />
                 <span>{participant.display_name}<small>{participant.archetype}</small></span>
               </button>
             )) : <p>还没有上传角色照片的存活参赛者。</p>}

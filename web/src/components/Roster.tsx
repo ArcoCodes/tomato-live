@@ -21,33 +21,19 @@ export function Roster({ participants, selectedId }: { participants: Participant
         <span className="alive-count">{alive} ALIVE</span>
       </div>
 
+      {/* Faces only: the cast keeps growing, and names would set the panel's floor width. */}
       <div className="roster-list">
-        {participants.map((participant, index) => (
-          <article
-            className={`roster-item status-${participant.status}${selectedId === participant.id ? " is-you" : ""}`}
+        {participants.map((participant) => (
+          <div
+            className={`roster-face status-${participant.status}${selectedId === participant.id ? " is-you" : ""}`}
             key={participant.id}
+            style={{ "--avatar-accent": participant.accent } as CSSProperties}
+            title={`${participant.display_name} · ${participant.archetype} · ${statusLabel[participant.status]}`}
           >
-            <span className="rank">{String(index + 1).padStart(2, "0")}</span>
-            <div className="avatar" style={{ "--avatar-accent": participant.accent } as CSSProperties}>
-              {participant.avatar_url
-                ? <img src={participant.avatar_url} alt="" />
-                : <span>{participant.display_name.slice(0, 2).toUpperCase()}</span>}
-            </div>
-            <div className="roster-copy">
-              <div className="name-row">
-                <strong>{participant.display_name}</strong>
-                {selectedId === participant.id && <span className="you-tag">YOU</span>}
-              </div>
-              <span>{participant.archetype}</span>
-              <div className="health-track" aria-label={`生命值 ${participant.health}`}>
-                <i style={{ width: `${participant.health}%`, background: participant.accent }} />
-              </div>
-            </div>
-            <div className="roster-state">
-              <span>{statusLabel[participant.status]}</span>
-              <b>{participant.score}</b>
-            </div>
-          </article>
+            {participant.portrait_url
+              ? <img src={participant.portrait_url} alt={participant.display_name} loading="lazy" />
+              : <span>{participant.display_name.slice(0, 2).toUpperCase()}</span>}
+          </div>
         ))}
       </div>
     </aside>

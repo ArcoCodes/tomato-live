@@ -77,26 +77,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .eyebrow { font: 8px var(--utility); letter-spacing: .18em; color: var(--faint); }
 .alive-count, .signal { font: 8px var(--utility); letter-spacing: .08em; color: var(--brand); font-weight: 600; }
 .roster-list { overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
-.roster-list { padding: 8px; display: flex; flex-direction: column; gap: 4px; }
-.roster-item { padding: 11px 12px 11px 11px; display: grid; grid-template-columns: 20px 42px 1fr auto; gap: 10px; align-items: center; border-radius: var(--r-md); position: relative; transition: background .18s ease; }
-.roster-item:hover { background: var(--surface-2); }
-.roster-item.is-you { background: var(--brand-soft); }
-.roster-item.is-you::before { content: ""; position: absolute; top: 12px; bottom: 12px; left: 0; width: 3px; border-radius: var(--r-pill); background: var(--brand); }
-.roster-item.status-eliminated { opacity: .45; filter: grayscale(.75); }
-.rank { align-self: start; padding-top: 4px; font: 9px var(--utility); color: var(--faint); }
+.roster-list { padding: 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(48px, 1fr)); gap: 8px; align-content: start; }
+.roster-face { --avatar-accent: var(--brand); aspect-ratio: 1; overflow: hidden; display: grid; place-items: center; border-radius: var(--r-md); background: var(--avatar-accent); box-shadow: inset 0 0 0 1px rgb(15 12 10 / .07); color: #fff; font: 13px var(--display); transition: box-shadow .18s ease, transform .18s ease; }
+.roster-face img { width: 100%; height: 100%; object-fit: cover; }
+.roster-face:hover { transform: translateY(-1px); }
+.roster-face.is-you { box-shadow: 0 0 0 2px var(--brand); }
+.roster-face.status-eliminated { opacity: .4; filter: grayscale(.85); }
 .avatar { --avatar-accent: var(--brand); width: 42px; height: 48px; overflow: hidden; display: grid; place-items: center; color: #fff; background: var(--avatar-accent); border-radius: var(--r-md); font: 16px var(--display); }
 .avatar img { width: 100%; height: 100%; object-fit: cover; }
-.roster-copy { min-width: 0; }
-.name-row { display: flex; align-items: center; gap: 6px; }
-.roster-copy strong { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.roster-copy > span { display: block; margin-top: 2px; color: var(--muted); font-size: 9px; }
-.you-tag { padding: 1px 6px; border-radius: var(--r-pill); background: var(--brand); color: #fff; font: 7px var(--utility); font-weight: 600; }
-.health-track { height: 3px; margin-top: 9px; border-radius: var(--r-pill); background: var(--surface-3); overflow: hidden; }
-.health-track i { display: block; height: 100%; border-radius: var(--r-pill); transition: width .45s ease; }
-.roster-state { align-self: stretch; display: flex; flex-direction: column; justify-content: space-between; text-align: right; }
-.roster-state span { font-size: 8px; color: var(--muted); }
 .status-danger .roster-state span { color: var(--danger); }
-.roster-state b { font: 11px var(--utility); font-weight: 600; }
 
 .broadcast { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
 .broadcast-media { width: 100%; flex: 1 1 0; min-height: 120px; position: relative; overflow: hidden; border-radius: var(--r-xl); background: var(--stage); box-shadow: var(--sh-3); }
@@ -324,7 +313,7 @@ fieldset { border: 0; padding: 0; margin: 0 0 20px; }
 @media (max-width: 760px) {
   .topbar { height: 64px; padding: 0 14px; }.brand-lockup strong { font-size: 20px; }.brand-lockup div span, .text-action { display: none; }.join-action { height: 36px; padding: 0 14px; }
   .live-grid { height: auto; min-height: 0; display: flex; flex-direction: column; padding: 10px; gap: 10px; }.broadcast { order: 1; }.broadcast-media { height: min(63vw, 430px); min-height: 280px; flex: none; }
-  .roster-panel { order: 2; }.panel-heading { min-height: 58px; }.roster-list { flex-direction: row; overflow-x: auto; }.roster-item { min-width: 218px; }.story-panel { display: flex; order: 3; }
+  .roster-panel { order: 2; }.panel-heading { min-height: 58px; }.roster-list { grid-auto-flow: column; grid-auto-columns: 48px; grid-template-columns: none; overflow-x: auto; }.story-panel { display: flex; order: 3; }
   .spectator-bar, .action-bar { height: auto; min-height: 120px; padding: 16px 14px; }.spectator-bar { grid-template-columns: 1fr auto; }.spectator-bar p { display: none; }.action-bar { grid-template-columns: 1fr; }.action-options { grid-template-columns: repeat(3, 1fr); }
   footer { padding: 0 14px; min-height: 42px; } footer > span { display: none; } footer div { width: 100%; justify-content: space-between; gap: 8px; }
   .join-dialog, .auth-dialog, .director-dialog { padding: 26px 18px 20px; }.prompt-section { grid-template-columns: 1fr; }.director-roster { grid-template-columns: repeat(2, 1fr); }.choice-grid { grid-template-columns: repeat(2, 1fr); }

@@ -71,6 +71,9 @@ export const participants = sqliteTable("participants", {
   archetype: text("archetype").notNull(),
   accent: text("accent").notNull(),
   avatar_s3_uri: text("avatar_s3_uri"),
+  // What the roster and the cast cards show. Kept apart from avatar_s3_uri because that one is the
+  // 16:9 opening frame for video generation, and its aspect ratio is not negotiable.
+  portrait_s3_uri: text("portrait_s3_uri"),
   renoise_material_id: integer("renoise_material_id"),
   status: text("status", { enum: ["ready", "alive", "danger", "eliminated"] }).notNull().default("ready"),
   health: integer("health").notNull().default(100),

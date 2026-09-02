@@ -176,8 +176,8 @@ export function ActionBar({ participant, roster, myCharacters, onSwitchCharacter
                 className={item.id === participant.id ? "active" : ""}
                 onClick={() => onSwitchCharacter(item.id)}
               >
-                {item.avatar_url
-                  ? <img src={item.avatar_url} alt="" />
+                {(item.portrait_url ?? item.avatar_url)
+                  ? <img src={item.portrait_url ?? item.avatar_url!} alt="" />
                   : <i>{item.display_name.slice(0, 1)}</i>}
                 <span>{item.display_name}</span>
               </button>
@@ -185,8 +185,8 @@ export function ActionBar({ participant, roster, myCharacters, onSwitchCharacter
           </div>
         ) : (
           <div className="my-identity">
-            {participant.avatar_url
-              ? <img className="my-avatar" src={participant.avatar_url} alt="" />
+            {(participant.portrait_url ?? participant.avatar_url)
+              ? <img className="my-avatar" src={participant.portrait_url ?? participant.avatar_url!} alt="" />
               : <i className="my-avatar">{participant.display_name.slice(0, 1)}</i>}
             <div>
               <span className="eyebrow">YOUR MOVE</span>
