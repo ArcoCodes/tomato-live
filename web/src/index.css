@@ -199,13 +199,16 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .timeline-name { display: flex; align-items: center; gap: 8px; padding: 0 8px 0 4px; border: 0; border-radius: var(--r-sm); background: transparent; text-align: left; cursor: pointer; transition: background .15s ease; }
 .timeline-name:hover { background: var(--surface-2); }
 .timeline-name.active { background: var(--brand-soft); }
-.timeline-name b { font-size: 11px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lane-text { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.timeline-name b { font-size: 11px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.timeline-name em { font: 8px var(--utility); font-style: normal; color: var(--faint); }
 .lane-avatar { flex: none; width: 20px; height: 20px; border-radius: 50%; overflow: hidden; background: var(--surface-3); display: grid; place-items: center; }
 .lane-avatar img { width: 100%; height: 100%; object-fit: cover; }
 .lane-avatar i { font: 11px var(--display); font-style: normal; color: var(--muted); }
 .timeline-scroll { min-width: 0; overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
 .timeline-svg { display: block; }
 .timeline-node { cursor: pointer; }
+.timeline-node:hover circle { filter: brightness(1.12); }
 .action-bar { grid-template-columns: 216px minmax(0, 1fr); gap: 24px; }
 .my-state { display: flex; flex-direction: column; gap: 9px; min-width: 0; }
 .my-identity { display: flex; align-items: center; gap: 10px; }
