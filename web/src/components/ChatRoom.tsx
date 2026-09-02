@@ -223,12 +223,17 @@ export function ChatRoom({ messages, participants, waiting, allowance, isAuthent
             <span className="eyebrow">再来 {unlock.grant} 次</span>
             <h3>{unlock.title}</h3>
             <p>{unlock.detail}</p>
-            <a className="chat-unlock-go" href={unlock.url} target="_blank" rel="noreferrer noopener">
-              前往 <span>↗</span>
+            {/* Going there is the whole ask — nothing on this side can check what happens next, so
+                asking again afterwards would only add a step. */}
+            <a
+              className="chat-unlock-go"
+              href={unlock.url}
+              target="_blank"
+              rel="noreferrer noopener"
+              onClick={() => void claimUnlock(unlock)}
+            >
+              {unlocking ? "解锁中…" : unlock.cta} <span>↗</span>
             </a>
-            <button type="button" className="chat-unlock-done" disabled={unlocking} onClick={() => void claimUnlock(unlock)}>
-              {unlocking ? "解锁中…" : unlock.cta}
-            </button>
             <button type="button" className="chat-unlock-close" onClick={() => setUnlock(null)}>以后再说</button>
           </div>
         </div>
