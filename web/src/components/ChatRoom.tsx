@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
 import { client } from "@/lib/edgespark";
 import type { ChatAllowance, ChatMessage, ChatUnlock, Participant } from "@/types/live";
 
@@ -215,7 +216,8 @@ export function ChatRoom({ messages, participants, waiting, allowance, isAuthent
         {spent && !unlock ? <p className="chat-notice">发言机会已经全部用完了，谢谢你把故事推到这里。</p> : null}
       </div>
 
-      {unlock ? (
+      {unlock ? createPortal((
+        // Portalled to the body: the panel clips its overflow, and the card is wider than the panel.
         <div className="chat-unlock" role="dialog" aria-label={unlock.title}>
           <div className="chat-unlock-card">
             <span className="eyebrow">再来 {unlock.grant} 次</span>
@@ -230,7 +232,7 @@ export function ChatRoom({ messages, participants, waiting, allowance, isAuthent
             <button type="button" className="chat-unlock-close" onClick={() => setUnlock(null)}>以后再说</button>
           </div>
         </div>
-      ) : null}
+      ), document.body) : null}
     </aside>
   );
 }
