@@ -12,6 +12,10 @@ import { client } from "@/lib/edgespark";
 import type { BroadcastClip, LinkOffer, LiveData, PlayerControl } from "@/types/live";
 
 const DIRECTOR_CHANNEL = "director";
+// Mirrors CHARACTER_CREATION_OPEN on the server; the endpoint refuses regardless, this just keeps
+// viewers out of a flow that would fail at the end.
+const CHARACTER_CREATION_OPEN = false;
+const CHARACTER_CREATION_CLOSED_NOTICE = "角色创建功能马上开放，敬请期待。";
 
 function channelKeyFor(clip: BroadcastClip) {
   return clip.channel === "director" ? DIRECTOR_CHANNEL : `p:${clip.channel_participant_id}`;
@@ -79,6 +83,7 @@ function App() {
   const [live, setLive] = useState<LiveData | null>(null);
   const [error, setError] = useState("");
   const [joinOpen, setJoinOpen] = useState(false);
+  const [toast, setToast] = useState("");
   const [directorOpen, setDirectorOpen] = useState(false);
   const [controls, setControls] = useState<PlayerControl[]>(() => readControls());
   const [loginOpen, setLoginOpen] = useState(false);
@@ -270,7 +275,17 @@ function App() {
     setActiveChannel(DIRECTOR_CHANNEL);
   }
 
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(""), 3600);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
   function openJoin() {
+    if (!CHARACTER_CREATION_OPEN) {
+      setToast(CHARACTER_CREATION_CLOSED_NOTICE);
+      return;
+    }
     // Creating a character now requires an account, so send anonymous viewers to sign in first.
     if (!isAuthenticated) {
       setLoginOpen(true);
@@ -360,6 +375,8 @@ function App() {
       </footer>
 
       <LoginDialog open={loginOpen} onClose={() => setLoginOpen(false)} />
+      {toast ? <div className="app-toast" role="status">{toast}</div> : null}
+
       <JoinDialog open={joinOpen} onClose={() => setJoinOpen(false)} onJoined={(next) => { addControl(next); void refresh(true); }} />
       <DirectorDialog
         open={directorOpen}

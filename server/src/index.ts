@@ -19,6 +19,9 @@ const LIVE_VIDEO_DURATION_SECONDS = 10;
 const CHARACTER_RATE_LIMIT_PER_HOUR = 3;
 // Everyone gets one contestant; the host account runs the show and needs several.
 const CHARACTER_LIMIT_PER_USER = 1;
+// Character creation is closed while the house cast carries the show. Flip to true to reopen it.
+const CHARACTER_CREATION_OPEN = false;
+const CHARACTER_CREATION_CLOSED_NOTICE = "角色创建功能马上开放，敬请期待。";
 const CHARACTER_LIMIT_HOST = 12;
 // Mid-dark hues: they sit on white with enough contrast to carry white text in the avatar tile.
 const ACCENTS = ["#e64b22", "#1d7874", "#b4530a", "#4a4e9c", "#a6273f"];
@@ -1889,13 +1892,16 @@ const app = new Hono()
       resolution: CHARACTER_RESOLUTION,
       estimatedCredit: null,
       sufficient: true,
-      available: Boolean(secret.get("MINIMAX_API_KEY")),
-      notice: secret.get("MINIMAX_API_KEY")
-        ? "当前将通过 MiniMax 官方 API 生成 1 张角色定妆图。"
-        : "MiniMax API Key 尚未配置，暂时不能生成角色。",
+      available: CHARACTER_CREATION_OPEN && Boolean(secret.get("MINIMAX_API_KEY")),
+      notice: !CHARACTER_CREATION_OPEN
+        ? CHARACTER_CREATION_CLOSED_NOTICE
+        : secret.get("MINIMAX_API_KEY")
+          ? "当前将通过 MiniMax 官方 API 生成 1 张角色定妆图。"
+          : "MiniMax API Key 尚未配置，暂时不能生成角色。",
     });
   })
   .post("/api/public/character/generations", async (c) => {
+    if (!CHARACTER_CREATION_OPEN) return c.json({ error: CHARACTER_CREATION_CLOSED_NOTICE }, 503);
     // Characters belong to accounts now: it is what makes them recoverable and what the per-user
     // limit is counted against.
     if (!auth.user) return c.json({ error: "请先登录后再创建角色" }, 401);
