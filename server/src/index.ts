@@ -1767,7 +1767,15 @@ const app = new Hono()
     const data = asObject(await c.req.json().catch(() => ({})));
     const displayName = cleanText(data.displayName, 20);
     const archetype = cleanText(data.archetype, 30) || "探索者";
-    const accent = cleanText(data.accent, 16) || ACCENTS[Math.floor(Math.random() * ACCENTS.length)];
+    // Contestants are told apart by colour on the story map, so a duplicate accent makes two lines
+    // indistinguishable. Prefer one nobody in this match is using.
+    const usedAccents = new Set((await db.select({ accent: participants.accent }).from(participants)
+      .where(eq(participants.match_id, quotaMatch.id))).map((row) => row.accent));
+    const freeAccents = ACCENTS.filter((item) => !usedAccents.has(item));
+    const requestedAccent = cleanText(data.accent, 16);
+    const accent = requestedAccent && !usedAccents.has(requestedAccent)
+      ? requestedAccent
+      : freeAccents[0] ?? ACCENTS[Math.floor(Math.random() * ACCENTS.length)];
     const avatarPath = cleanText(data.avatarPath, 240);
     if (displayName.length < 2) return c.json({ error: "参赛名至少需要 2 个字符" }, 400);
     if (!avatarPath || !avatarPath.startsWith("avatars/")) return c.json({ error: "请先上传一张有效的本人照片" }, 400);

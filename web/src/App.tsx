@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ActionBar } from "@/components/ActionBar";
 import { Broadcast, type ChannelTab } from "@/components/Broadcast";
 import { DirectorDialog } from "@/components/DirectorDialog";
-import { EventFeed } from "@/components/EventFeed";
 import { JoinDialog } from "@/components/JoinDialog";
 import { MatchTimeline } from "@/components/MatchTimeline";
 import { LoginDialog } from "@/components/LoginDialog";
@@ -329,7 +328,15 @@ function App() {
           onSelectChannel={setActiveChannel}
           myPendingStage={myPendingStage}
         />
-        <EventFeed events={live.events} />
+        <MatchTimeline
+          participants={live.participants.filter((item) => item.status !== "eliminated")}
+          clips={live.clips}
+          activeChannel={activeChannel}
+          onSelectChannel={setActiveChannel}
+          onComposeChannel={myCharacters[0]
+            ? { key: `p:${myCharacters[0].id}`, label: myCharacters[0].display_name }
+            : undefined}
+        />
       </main>
 
       {myParticipant && control ? (
@@ -344,16 +351,19 @@ function App() {
           pendingGeneration={(live.pending_generations ?? []).find((item) => item.channel_participant_id === myParticipant.id) ?? null}
           onUpdated={() => refresh(true)}
         />
-      ) : ownedIds.length ? (
-        <MatchTimeline
-          participants={live.participants.filter((item) => item.status !== "eliminated")}
-          clips={live.clips}
-          activeChannel={activeChannel}
-          onSelectChannel={setActiveChannel}
-          onComposeChannel={myCharacters[0]
-            ? { key: `p:${myCharacters[0].id}`, label: myCharacters[0].display_name }
-            : undefined}
-        />
+      ) : ownedIds.length && myCharacters[0] ? (
+        <section className="spectator-bar">
+          <div>
+            <span className="eyebrow">SPECTATING</span>
+            <strong>{activeChannel === DIRECTOR_CHANNEL
+              ? "你正在看总导播画面"
+              : `你正在看 ${live.participants.find((item) => `p:${item.id}` === activeChannel)?.display_name ?? "其他选手"} 的视角`}</strong>
+          </div>
+          <p>切回自己的视角就能写下一条指令。</p>
+          <button onClick={() => setActiveChannel(`p:${myCharacters[0].id}`)}>
+            回到 {myCharacters[0].display_name} 的视角 <span>→</span>
+          </button>
+        </section>
       ) : (
         <section className="spectator-bar">
           <div><span className="eyebrow">SPECTATOR MODE</span><strong>你正在以观众身份观看</strong></div>

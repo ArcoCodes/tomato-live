@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { BroadcastClip, Participant } from "@/types/live";
 
-const LANE_H = 46;
-const STEP = 74;
-const PAD_X = 40;
-const PAD_Y = 26;
+const LANE_H = 52;
+const STEP = 46;
+const PAD_X = 30;
+const PAD_Y = 24;
 const WOBBLE = 9;
 
 /** Deterministic per-clip jitter: the line wanders, but never re-wanders between renders. */
@@ -86,12 +86,17 @@ export function MatchTimeline({ participants, clips, activeChannel, onSelectChan
   const contentW = PAD_X * 2 + Math.max(ordered.length - 1, 0) * STEP;
   const latestId = ordered[ordered.length - 1]?.id ?? null;
 
-  // Open on the newest end of the story; that is where the live edge is.
+  // Open on the newest end of the story — that is where the live edge is — with the lines centred
+  // vertically, since a few contestants leave the square canvas mostly empty otherwise.
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
-    setPan({ x: Math.min(0, view.clientWidth - contentW - PAD_X), y: 0 });
-  }, [contentW]);
+    const contentH = PAD_Y * 2 + Math.max(participants.length - 1, 0) * LANE_H;
+    setPan({
+      x: Math.min(0, view.clientWidth - contentW - PAD_X),
+      y: Math.max(0, (view.clientHeight - contentH) / 2),
+    });
+  }, [contentW, participants.length]);
 
   // Listeners go on window rather than the element: with pointer capture the drag stalled as soon
   // as the cursor left the canvas, and it never started at all under synthetic events.
@@ -132,18 +137,16 @@ export function MatchTimeline({ participants, clips, activeChannel, onSelectChan
     onSelectChannel(`p:${clip.channel_participant_id}`);
   }
 
+  const latest = ordered[ordered.length - 1];
+
   return (
-    <section className="match-timeline">
-      <div className="timeline-head">
+    <aside className="story-panel">
+      <div className="panel-heading">
         <div>
           <span className="eyebrow">STORY MAP</span>
-          <b>{ordered.length} 段 · 可拖动查看 · 线交汇处是两人同框的时刻</b>
+          <h2>故事线</h2>
         </div>
-        {onComposeChannel ? (
-          <button type="button" className="timeline-compose" onClick={() => onSelectChannel(onComposeChannel.key)}>
-            给 {onComposeChannel.label} 下指令 <span>→</span>
-          </button>
-        ) : null}
+        <span className="signal">{ordered.length} 段</span>
       </div>
 
       <div
@@ -155,8 +158,17 @@ export function MatchTimeline({ participants, clips, activeChannel, onSelectChan
           <g transform={`translate(${pan.x},${pan.y})`}>
             {lines.map(({ participant, marks, home }) => {
               const active = activeChannel === `p:${participant.id}`;
+              // Every line runs the full width: a contestant with no recent clip has a quiet stretch,
+              // not a missing line, and the canvas opens at the newest end where that stretch lands.
+              const lastX = marks[marks.length - 1]?.x ?? PAD_X;
+              const tailX = Math.max(lastX + 46, contentW + PAD_X);
+              // Settle back onto the baseline right after the last clip, so a long quiet stretch
+              // runs flat instead of sloping across the whole canvas.
+              const tail = lastX + 46 < tailX
+                ? [{ x: lastX + 46, y: home }, { x: tailX, y: home }]
+                : [{ x: tailX, y: home }];
               const path = smoothPath(marks.length
-                ? [{ x: PAD_X - 34, y: home }, ...marks, { x: (marks[marks.length - 1]?.x ?? PAD_X) + 46, y: home }]
+                ? [{ x: PAD_X - 34, y: home }, ...marks, ...tail]
                 : [{ x: PAD_X - 34, y: home }, { x: contentW + PAD_X, y: home }]);
               return (
                 <g key={participant.id}>
@@ -195,7 +207,7 @@ export function MatchTimeline({ participants, clips, activeChannel, onSelectChan
               </g>
             )))}
           </g>
-          {/* Names ride the vertical pan only, so they stay legible however far the story is dragged. */}
+          {/* Names ride the vertical pan only, so they stay legible however far the map is dragged. */}
           <g transform={`translate(0,${pan.y})`}>
             {lines.map(({ participant, home }) => (
               <text key={`name-${participant.id}`} x={10} y={home - 14} className="story-name" fill={participant.accent}>
@@ -205,6 +217,17 @@ export function MatchTimeline({ participants, clips, activeChannel, onSelectChan
           </g>
         </svg>
       </div>
-    </section>
+
+      <div className="story-note">
+        {latest?.summary
+          ? <p>{latest.summary}</p>
+          : <p className="is-empty">还没有片段。写一条指令，故事线就会从这里长出去。</p>}
+        {onComposeChannel && activeChannel !== onComposeChannel.key ? (
+          <button type="button" className="timeline-compose" onClick={() => onSelectChannel(onComposeChannel.key)}>
+            给 {onComposeChannel.label} 下指令 <span>→</span>
+          </button>
+        ) : null}
+      </div>
+    </aside>
   );
 }
