@@ -78,6 +78,13 @@
       "when": 1788338065652,
       "tag": "0010_perpetual_thing",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1788339876064,
+      "tag": "0011_lazy_warhawk",
+      "breakpoints": true
     }
   ]
 }

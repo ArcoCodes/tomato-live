@@ -3,7 +3,7 @@ import { ActionBar } from "@/components/ActionBar";
 import { Broadcast, type ChannelTab } from "@/components/Broadcast";
 import { DirectorDialog } from "@/components/DirectorDialog";
 import { JoinDialog } from "@/components/JoinDialog";
-import { MatchTimeline } from "@/components/MatchTimeline";
+import { ChatRoom } from "@/components/ChatRoom";
 import { LoginDialog } from "@/components/LoginDialog";
 import { Roster } from "@/components/Roster";
 import { useAuth } from "@/hooks/useAuth";
@@ -340,14 +340,13 @@ function App() {
           onSelectChannel={setActiveChannel}
           myPendingStage={myPendingStage}
         />
-        <MatchTimeline
-          participants={live.participants.filter((item) => item.status !== "eliminated")}
-          clips={live.clips}
-          activeChannel={activeChannel}
-          onSelectChannel={setActiveChannel}
-          onComposeChannel={myCharacters[0]
-            ? { key: `p:${myCharacters[0].id}`, label: myCharacters[0].display_name }
-            : undefined}
+        <ChatRoom
+          messages={live.chat ?? []}
+          waiting={live.chat_waiting ?? 0}
+          participants={live.participants}
+          isAuthenticated={isAuthenticated}
+          onRequireLogin={() => setLoginOpen(true)}
+          onSent={() => void refresh(true)}
         />
       </main>
 

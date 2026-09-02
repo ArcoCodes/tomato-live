@@ -144,6 +144,27 @@ export const directorVotes = sqliteTable("director_votes", {
   uniqueIndex("director_votes_unique").on(table.round_id, table.voter_hash),
 ]);
 
+// Viewer chat. Messages are both the room's conversation and the queue the show pulls its next
+// beat from, which is why consumption is tracked on the row itself.
+export const chatMessages = sqliteTable("chat_messages", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  match_id: integer("match_id").notNull().references(() => matches.id),
+  user_id: text("user_id").notNull(),
+  display_name: text("display_name").notNull(),
+  body: text("body").notNull(),
+  // Participant ids the message mentioned, as JSON. They are pulled into the shot together.
+  mentions: text("mentions").notNull().default("[]"),
+  // Claimed atomically when the show picks this message, so two concurrent pickers cannot film the
+  // same message twice.
+  consumed_at: text("consumed_at"),
+  generation_id: integer("generation_id"),
+  created_at: text("created_at").notNull().default(sql`(current_timestamp)`),
+}, (table) => [
+  index("chat_match_idx").on(table.match_id, table.id),
+  // The picker asks for unconsumed messages constantly; this is the index it rides.
+  index("chat_unconsumed_idx").on(table.match_id, table.consumed_at),
+]);
+
 export const generations = sqliteTable("generations", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   match_id: integer("match_id").notNull().references(() => matches.id),

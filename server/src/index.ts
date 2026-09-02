@@ -2,7 +2,7 @@ import { and, desc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-
 import { Hono } from "hono";
 import { db, secret, storage, vars } from "edgespark";
 import { auth } from "edgespark/http";
-import { buckets, characterDrafts, generations, matchEvents, matches, participants } from "@defs";
+import { buckets, characterDrafts, chatMessages, generations, matchEvents, matches, participants } from "@defs";
 
 const LIVE_SLUG = "island-zero";
 const RENOISE_DEFAULT_BASE_URL = "https://www.renoise.ai/api/public/v1";
@@ -1641,6 +1641,51 @@ async function autoQueuedWithin(matchId: number, seconds: number, housOnly: bool
     ));
   return Number(row?.n ?? 0);
 }
+// The room's chat is the queue the show films from. A message is claimed atomically so two pickers
+// running at once cannot shoot the same line twice, and a message that named a contestant is
+// preferred for that contestant's channel — being mentioned is how a viewer aims their idea.
+const CHAT_MAX_CHARS = 140;
+const CHAT_COOLDOWN_SECONDS = 4;
+
+// A handle, not the address: chat is public and an email is not.
+function chatHandle(email: string) {
+  const name = email.split("@")[0] || "观众";
+  return name.length > 14 ? `${name.slice(0, 14)}…` : name;
+}
+
+function chatPayload(row: typeof chatMessages.$inferSelect) {
+  return {
+    id: row.id,
+    display_name: row.display_name,
+    body: row.body,
+    mentions: parseParticipantIds(row.mentions),
+    filmed: Boolean(row.consumed_at),
+    generation_id: row.generation_id,
+    created_at: row.created_at,
+  };
+}
+
+async function claimChatCue(matchId: number, availableIds: number[]) {
+  const waiting = await db.select().from(chatMessages)
+    .where(and(eq(chatMessages.match_id, matchId), isNull(chatMessages.consumed_at)))
+    .orderBy(chatMessages.id)
+    .limit(30);
+  if (!waiting.length) return null;
+
+  // Naming someone is how a viewer casts their idea, so a message whose target is free to film
+  // outranks one that would have to be handed to whoever happens to be idle.
+  const aimed = waiting.filter((item) => parseParticipantIds(item.mentions).some((id) => availableIds.includes(id)));
+  const unaimed = waiting.filter((item) => parseParticipantIds(item.mentions).length === 0);
+  const pool = aimed.length ? aimed : unaimed.length ? unaimed : waiting;
+  const pick = pool[Math.floor(Math.random() * pool.length)];
+
+  const [claimed] = await db.update(chatMessages)
+    .set({ consumed_at: new Date().toISOString() })
+    .where(and(eq(chatMessages.id, pick.id), isNull(chatMessages.consumed_at)))
+    .returning();
+  return claimed ?? null;
+}
+
 const HOUSE_CAST_CUE = "Take the next concrete step in your own plan on this island, and run into a new complication while doing it.";
 
 async function maybeAdvanceHouseCast(match: typeof matches.$inferSelect) {
@@ -1672,22 +1717,32 @@ async function maybeAdvanceHouseCast(match: typeof matches.$inferSelect) {
     for (const row of clipRows) {
       if (row.pid != null && !lastClip.has(row.pid)) lastClip.set(row.pid, row.id);
     }
-    // Whoever has been off screen longest goes next.
-    const next = cast
+    // Whoever has been off screen longest goes next, unless a waiting message names someone else.
+    const idle = cast
       .filter((item) => !busy.has(item.id))
-      .sort((a, b) => (lastClip.get(a.id) ?? -1) - (lastClip.get(b.id) ?? -1))[0];
-    if (!next) return null;
+      .sort((a, b) => (lastClip.get(a.id) ?? -1) - (lastClip.get(b.id) ?? -1));
+    if (!idle.length) return null;
 
-    return await queueLiveGeneration({
+    const cue = await claimChatCue(matchId, idle.map((item) => item.id));
+    const mentioned = cue ? parseParticipantIds(cue.mentions) : [];
+    // The first person named who is free to film owns the shot; the rest join it.
+    const next = idle.find((item) => mentioned.includes(item.id)) ?? idle[0];
+    const guestIds = mentioned.filter((id) => id !== next.id);
+    const generation = await queueLiveGeneration({
       channel: "participant",
       channelParticipantId: next.id,
-      participantIds: [next.id],
+      participantIds: [next.id, ...guestIds].slice(0, 3),
       keyframePrompt: "",
       videoPrompt: "",
       visualMemory: "",
       duration: LIVE_VIDEO_DURATION_SECONDS,
-      viewerPrompt: HOUSE_CAST_CUE,
-    }, "house:auto");
+      viewerPrompt: cue ? cue.body : HOUSE_CAST_CUE,
+    }, cue ? "house:chat" : "house:auto");
+    if (cue && generation) {
+      await db.update(chatMessages).set({ generation_id: generation.id })
+        .where(eq(chatMessages.id, cue.id)).catch(() => undefined);
+    }
+    return generation;
   } catch {
     // The house cast stalling must never break the request that happened to tick it.
     return null;
@@ -1820,6 +1875,36 @@ function liveGenerationErrorStatus(error: unknown) {
 
 const app = new Hono()
   .get("/api/public/health", (c) => c.json({ ok: true, service: "tomato-live" }))
+  .post("/api/public/chat", async (c) => {
+    if (!auth.user) return c.json({ error: "请先登录后再发言" }, 401);
+    const data = asObject(await c.req.json().catch(() => ({})));
+    const body = cleanText(data.body, CHAT_MAX_CHARS);
+    if (body.length < 2) return c.json({ error: "说点什么再发送" }, 400);
+    const match = await ensureLiveMatch();
+
+    const [recent] = await db.select({ n: sql<number>`count(*)` }).from(chatMessages).where(and(
+      eq(chatMessages.match_id, match.id),
+      eq(chatMessages.user_id, auth.user.id),
+      sql`${chatMessages.created_at} >= datetime('now', ${`-${CHAT_COOLDOWN_SECONDS} seconds`})`,
+    ));
+    if (Number(recent?.n ?? 0) > 0) return c.json({ error: "发得太快了，缓一缓再说" }, 429);
+
+    const roster = await db.select().from(participants).where(and(
+      eq(participants.match_id, match.id),
+      or(isNotNull(participants.character_draft_id), eq(participants.is_system, true)),
+    ));
+    // -1 because nobody in chat is a contestant themselves, so every name is a real mention.
+    const mentions = mentionedParticipants(body, roster, -1).map((item) => item.id).slice(0, 3);
+
+    const [row] = await db.insert(chatMessages).values({
+      match_id: match.id,
+      user_id: auth.user.id,
+      display_name: chatHandle(auth.user.email ?? ""),
+      body,
+      mentions: JSON.stringify(mentions),
+    }).returning();
+    return c.json({ message: chatPayload(row), mentions }, 201);
+  })
   .get("/api/admin/generation-tier", async (c) => {
     if (!isHostAccount()) return c.json({ error: "当前账号没有导演权限" }, 403);
     const match = await ensureLiveMatch();
@@ -1905,8 +1990,15 @@ const app = new Hono()
       created_at: item.created_at,
     }));
     const pendingGeneration = pendingList[0] ?? null;
+    const chat = await db.select().from(chatMessages)
+      .where(eq(chatMessages.match_id, match.id))
+      .orderBy(desc(chatMessages.id))
+      .limit(40);
     return c.json({
       match,
+      // Oldest first: the room reads top to bottom.
+      chat: chat.reverse().map(chatPayload),
+      chat_waiting: chat.filter((item) => !item.consumed_at).length,
       participants: rosterWithUrls,
       events,
       clips: clipList,

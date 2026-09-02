@@ -79,6 +79,8 @@ export interface LiveData {
   events: MatchEvent[];
   clips: BroadcastClip[];
   story_choices: StoryChoice[];
+  chat: ChatMessage[];
+  chat_waiting: number;
   pending_generation: PendingGeneration | null;
   pending_generations: PendingGeneration[];
   /** Contestant clips whose tail frame nobody has captured yet; the browser harvests these. */
@@ -123,4 +125,14 @@ export interface CharacterCost {
   sufficient: boolean;
   available: boolean;
   notice?: string;
+}
+
+export interface ChatMessage {
+  id: number;
+  display_name: string;
+  body: string;
+  mentions: number[];
+  filmed: boolean;
+  generation_id: number | null;
+  created_at: string;
 }
