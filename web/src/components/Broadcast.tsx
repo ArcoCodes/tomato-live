@@ -520,9 +520,10 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
                     className="clip-card"
                     title={member.display_name}
                     style={{
-                      // Fanned around centre; the tilt lives in a variable so the hover lift can
-                      // compose with it instead of overwriting the transform.
-                      "--tilt": `${(index - (all.length - 1) / 2) * 8}deg`,
+                      // Fanned around centre when there are several; a lone sheet still gets a tilt
+                      // so it reads as a card rather than a pasted-on badge. The tilt lives in a
+                      // variable so the hover lift can compose with it.
+                      "--tilt": `${all.length === 1 ? 7 : (index - (all.length - 1) / 2) * 8}deg`,
                       zIndex: all.length - index,
                     } as React.CSSProperties}
                   >
