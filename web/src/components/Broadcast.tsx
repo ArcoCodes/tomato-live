@@ -113,6 +113,8 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
   const standbyReadyKeyRef = useRef("");
   const holdingRef = useRef(false);
   const seenUrlsRef = useRef(new Map<number, string>());
+  const archiveRef = useRef<HTMLDivElement | null>(null);
+  const [archiveNav, setArchiveNav] = useState({ left: false, right: false });
   const currentIndex = playable.findIndex((item) => item.id === currentClipId);
   const normalizedIndex = currentIndex >= 0 ? currentIndex : 0;
   const clip = playable[normalizedIndex];
@@ -257,6 +259,31 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
     // A viewer pick, or a clip landing on top of a frozen last frame, must take over as soon as it can play.
     if ((queuedClipId != null || holdingRef.current) && standbyClip?.id != null) pendingHandoffRef.current = true;
   }, [currentClipId, queuedClipId, standbyClip?.id]);
+
+  // Explicit paging beats a scrollbar here: macOS renders overlay scrollbars that fade when idle,
+  // so on some setups the strip gave no hint that it scrolls at all.
+  useEffect(() => {
+    const el = archiveRef.current;
+    if (!el) return;
+    const update = () => setArchiveNav({
+      left: el.scrollLeft > 4,
+      right: el.scrollLeft + el.clientWidth < el.scrollWidth - 4,
+    });
+    update();
+    el.addEventListener("scroll", update, { passive: true });
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => {
+      el.removeEventListener("scroll", update);
+      observer.disconnect();
+    };
+  }, [clips.length]);
+
+  function pageArchive(direction: 1 | -1) {
+    const el = archiveRef.current;
+    if (!el) return;
+    el.scrollBy({ left: direction * Math.max(el.clientWidth * 0.8, 280), behavior: "smooth" });
+  }
 
   function isReadyToShow(video: HTMLVideoElement | null) {
     return Boolean(video && video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA);
@@ -505,7 +532,17 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
       </div>
 
       <div className="clip-history" aria-label="历史片段">
-        <div className="clip-history-track">
+        {archiveNav.left ? (
+          <button type="button" className="clip-nav is-left" aria-label="更早的片段" onClick={() => pageArchive(-1)}>
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M15 5l-7 7 7 7" /></svg>
+          </button>
+        ) : null}
+        {archiveNav.right ? (
+          <button type="button" className="clip-nav is-right" aria-label="更多片段" onClick={() => pageArchive(1)}>
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M9 5l7 7-7 7" /></svg>
+          </button>
+        ) : null}
+        <div className="clip-history-track" ref={archiveRef}>
           {history.length ? history.map((item, index) => (
             <button
               key={item.id}
