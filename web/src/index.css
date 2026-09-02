@@ -319,10 +319,12 @@ fieldset { border: 0; padding: 0; margin: 0 0 20px; }
   .broadcast-media { flex: none; container-type: normal; background: var(--stage); border-radius: var(--r-lg); box-shadow: var(--sh-2); }
   .broadcast-frame { width: auto; height: min(54vh, calc(100vw - 16px) * 832 / 480); max-width: 100%; margin: 0 auto; border-radius: 0; box-shadow: none; }
   .channel-bar { padding: 6px; gap: 6px; }
-  .channel-bar button { min-width: 0; padding: 6px 10px 6px 6px; gap: 7px; }
-  .channel-bar button i { width: 30px; height: 30px; }
-  .channel-bar button strong { font-size: 12px; }
-  .channel-bar button small { font-size: 8px; }
+  .channel-bar button { flex: none; min-width: 132px; max-width: 156px; padding: 6px 10px 6px 6px; gap: 8px; }
+  .channel-thumb { width: 34px; height: 34px; }
+  .channel-thumb.is-mark { width: 44px; }
+  .channel-copy { gap: 2px; }
+  .channel-copy strong { font-size: 13px; }
+  .channel-copy small { font-size: 8.5px; }
   .clip-history { padding: 2px 8px 0; }
   .clip-history-track { padding: 6px 0 2px; }
   .clip-history-track button { width: 84px; padding: 8px 0 0; }
@@ -453,4 +455,13 @@ fieldset { border: 0; padding: 0; margin: 0 0 20px; }
   .roster-hint { display: none; }
   .app-toast { left: 12px; right: 12px; transform: none; text-align: center; }
   @keyframes toast-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+}
+
+@media (max-width: 760px) {
+  /* Cast cards scale with the still they sit on, not with the desktop one. */
+  .clip-card { width: 26px; height: 26px; margin-left: -12px; }
+  .clip-cast { right: 6px; }
+  /* Room for a real conversation, not two lines of it. */
+  .chat-panel { min-height: 340px; }
+  .chat-list { min-height: 200px; }
 }
