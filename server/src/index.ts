@@ -1756,8 +1756,13 @@ const app = new Hono()
     // There is no scheduler here, so both lines advance on the back of the viewer heartbeat. The
     // director used to move only when a contestant clip finished, so a beat it had to skip because
     // it was busy never came round again and the main channel simply stopped.
-    await maybeStartDirectorClip(match.id);
-    await maybeAdvanceHouseCast(match.id);
+    //
+    // Only a heartbeat that says someone is actually watching starts new work: crawlers, uptime
+    // checks and a plain read of this endpoint should never put footage on the meter.
+    if (c.req.query("watching") === "1") {
+      await maybeStartDirectorClip(match.id);
+      await maybeAdvanceHouseCast(match.id);
+    }
     const [roster, allEvents, clips, pendingGenerations] = await Promise.all([
       db.select().from(participants)
         .where(and(

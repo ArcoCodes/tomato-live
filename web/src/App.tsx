@@ -92,9 +92,10 @@ function App() {
   const [activeChannel, setActiveChannel] = useState(DIRECTOR_CHANNEL);
   const { user, isAuthenticated, signOut } = useAuth();
 
-  const refresh = useCallback(async (quiet = false) => {
+  const refresh = useCallback(async (quiet = false, watching = false) => {
     try {
-      const response = await client.api.fetch("/api/public/live");
+      // Only a heartbeat from a visible tab advances generation; see the effect below.
+      const response = await client.api.fetch(watching ? "/api/public/live?watching=1" : "/api/public/live");
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "直播状态不可用");
       setLive(result);
@@ -105,9 +106,31 @@ function App() {
   }, []);
 
   useEffect(() => {
-    void refresh();
-    const timer = window.setInterval(() => void refresh(true), 9000);
-    return () => window.clearInterval(timer);
+    // Filming is driven by this heartbeat, so a tab left open behind another window would keep the
+    // island shooting for nobody at full cost. Stop while hidden, catch up the moment it is shown.
+    let timer = 0;
+    const start = () => {
+      if (!timer) timer = window.setInterval(() => void refresh(true, true), 9000);
+    };
+    const stop = () => {
+      if (timer) window.clearInterval(timer);
+      timer = 0;
+    };
+    const onVisibility = () => {
+      if (document.hidden) {
+        stop();
+        return;
+      }
+      void refresh(true, true);
+      start();
+    };
+    void refresh(false, !document.hidden);
+    if (!document.hidden) start();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [refresh]);
 
   // Characters owned by the signed-in account need no browser token at all; the legacy localStorage
