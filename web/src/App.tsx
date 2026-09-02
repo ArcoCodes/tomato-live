@@ -340,7 +340,7 @@ function App() {
         />
       ) : myParticipant ? (
         <MatchTimeline
-          participants={live.participants}
+          participants={live.participants.filter((item) => item.status !== "eliminated")}
           clips={live.clips}
           activeChannel={activeChannel}
           onSelectChannel={setActiveChannel}
