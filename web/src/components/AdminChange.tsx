@@ -37,6 +37,10 @@ export function AdminChange() {
     try {
       const response = await client.api.fetch("/api/admin/generation-tier");
       const result = await response.json();
+      // The framework answers an anonymous caller with its own code; that is not a message.
+      if (response.status === 401 || result.error === "UNAUTHENTICATED") {
+        throw new Error("请先用管理员账号登录");
+      }
       if (!response.ok) throw new Error(result.error || "读取生成档位失败");
       setState(result);
       setError("");
@@ -61,6 +65,9 @@ export function AdminChange() {
         body: JSON.stringify({ tier: key }),
       });
       const result = await response.json();
+      if (response.status === 401 || result.error === "UNAUTHENTICATED") {
+        throw new Error("登录已失效，请重新登录");
+      }
       if (!response.ok) throw new Error(result.error || "切换失败");
       setNote(result.message ?? "已切换");
       await load();
