@@ -485,7 +485,12 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
         ))}
       </div>
 
-      <div className="broadcast-media">
+      {/* A portrait clip cannot fill a landscape column, so the band beside it carries a blurred
+          bleed of the picture itself rather than reading as dead space. */}
+      <div
+        className="broadcast-media"
+        style={clip?.thumbnail_url ? { "--bleed": `url(${clip.thumbnail_url})` } as React.CSSProperties : undefined}
+      >
         <div className="broadcast-frame">
           {clip?.result_url ? (
             <>
