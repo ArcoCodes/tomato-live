@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { client } from "@/lib/edgespark";
-import type { ChatMessage, Participant } from "@/types/live";
+import type { ChatAllowance, ChatMessage, ChatUnlock, Participant } from "@/types/live";
 
 const CHAT_MAX = 140;
 
@@ -8,6 +8,7 @@ interface ChatRoomProps {
   messages: ChatMessage[];
   participants: Participant[];
   waiting: number;
+  allowance: ChatAllowance | null;
   isAuthenticated: boolean;
   onRequireLogin: () => void;
   onSent: () => void;
@@ -24,11 +25,14 @@ function renderBody(body: string, byName: Map<string, Participant>) {
   });
 }
 
-export function ChatRoom({ messages, participants, waiting, isAuthenticated, onRequireLogin, onSent }: ChatRoomProps) {
+export function ChatRoom({ messages, participants, waiting, allowance, isAuthenticated, onRequireLogin, onSent }: ChatRoomProps) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [trigger, setTrigger] = useState<{ at: number; query: string } | null>(null);
+  const [unlock, setUnlock] = useState<ChatUnlock | null>(null);
+  const [unlocking, setUnlocking] = useState(false);
+  const [spent, setSpent] = useState(false);
   const [pickIndex, setPickIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -94,6 +98,12 @@ export function ChatRoom({ messages, participants, waiting, isAuthenticated, onR
         body: JSON.stringify({ body }),
       });
       const result = await response.json();
+      if (response.status === 403) {
+        // Out of turns: the dialog is the only place the next step is offered.
+        setUnlock(result.allowance?.next ?? null);
+        setSpent(!result.allowance?.next);
+        return;
+      }
       if (!response.ok) throw new Error(result.error || "发送失败");
       setDraft("");
       pinnedRef.current = true;
@@ -105,6 +115,29 @@ export function ChatRoom({ messages, participants, waiting, isAuthenticated, onR
     }
   }
 
+  async function claimUnlock(step: ChatUnlock) {
+    setUnlocking(true);
+    try {
+      const response = await client.api.fetch("/api/public/chat/unlock", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ step: step.key }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "解锁失败");
+      setUnlock(null);
+      onSent();
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : "解锁失败");
+    } finally {
+      setUnlocking(false);
+    }
+  }
+
+  const quotaLabel = !allowance || allowance.unlimited
+    ? null
+    : `${allowance.remaining} / ${allowance.allowance} 次发言`;
+
   return (
     <aside className="chat-panel" aria-label="直播间聊天">
       <div className="panel-heading">
@@ -112,7 +145,7 @@ export function ChatRoom({ messages, participants, waiting, isAuthenticated, onR
           <span className="eyebrow">LIVE CHAT</span>
           <h2>聊天室</h2>
         </div>
-        <span className="alive-count">{waiting} 条待拍</span>
+        <span className="alive-count">{quotaLabel ?? `${waiting} 条待拍`}</span>
       </div>
 
       <div
@@ -179,7 +212,25 @@ export function ChatRoom({ messages, participants, waiting, isAuthenticated, onR
           </button>
         </div>
         {notice ? <p className="chat-notice">{notice}</p> : null}
+        {spent && !unlock ? <p className="chat-notice">发言机会已经全部用完了，谢谢你把故事推到这里。</p> : null}
       </div>
+
+      {unlock ? (
+        <div className="chat-unlock" role="dialog" aria-label={unlock.title}>
+          <div className="chat-unlock-card">
+            <span className="eyebrow">再来 {unlock.grant} 次</span>
+            <h3>{unlock.title}</h3>
+            <p>{unlock.detail}</p>
+            <a className="chat-unlock-go" href={unlock.url} target="_blank" rel="noreferrer noopener">
+              前往 <span>↗</span>
+            </a>
+            <button type="button" className="chat-unlock-done" disabled={unlocking} onClick={() => void claimUnlock(unlock)}>
+              {unlocking ? "解锁中…" : unlock.cta}
+            </button>
+            <button type="button" className="chat-unlock-close" onClick={() => setUnlock(null)}>以后再说</button>
+          </div>
+        </div>
+      ) : null}
     </aside>
   );
 }

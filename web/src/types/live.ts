@@ -81,6 +81,7 @@ export interface LiveData {
   story_choices: StoryChoice[];
   chat: ChatMessage[];
   chat_waiting: number;
+  chat_allowance: ChatAllowance | null;
   pending_generation: PendingGeneration | null;
   pending_generations: PendingGeneration[];
   /** Contestant clips whose tail frame nobody has captured yet; the browser harvests these. */
@@ -135,4 +136,22 @@ export interface ChatMessage {
   filmed: boolean;
   generation_id: number | null;
   created_at: string;
+}
+
+export interface ChatUnlock {
+  key: string;
+  grant: number;
+  title: string;
+  detail: string;
+  url: string;
+  cta: string;
+}
+
+export interface ChatAllowance {
+  unlimited: boolean;
+  used: number;
+  allowance: number;
+  remaining: number;
+  tier: number;
+  next: ChatUnlock | null;
 }

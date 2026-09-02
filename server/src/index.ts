@@ -2,7 +2,7 @@ import { and, desc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-
 import { Hono } from "hono";
 import { db, secret, storage, vars } from "edgespark";
 import { auth } from "edgespark/http";
-import { buckets, characterDrafts, chatMessages, generations, matchEvents, matches, participants } from "@defs";
+import { buckets, characterDrafts, chatMessages, generations, matchEvents, matches, participants, viewerPerks } from "@defs";
 
 const LIVE_SLUG = "island-zero";
 const RENOISE_DEFAULT_BASE_URL = "https://www.renoise.ai/api/public/v1";
@@ -1645,6 +1645,73 @@ async function autoQueuedWithin(matchId: number, seconds: number, housOnly: bool
 // running at once cannot shoot the same line twice, and a message that named a contestant is
 // preferred for that contestant's channel — being mentioned is how a viewer aims their idea.
 const CHAT_MAX_CHARS = 140;
+// Speaking is what puts a clip on the meter, so it is rationed. Each step grants more, and none of
+// them can be checked from here — following an account off-site leaves nothing the server can read —
+// so unlocking is on the viewer's word. The host is exempt.
+const CHAT_UNLOCKS = [
+  { key: "base", grant: 1, title: "", detail: "", url: "", cta: "" },
+  {
+    key: "follow_x",
+    grant: 2,
+    title: "关注 Renoise 的 X 账号",
+    detail: "关注后回来点下面的按钮，再多 2 次发言机会。",
+    url: "https://x.com/renoise_ai",
+    cta: "我已关注，解锁 2 次",
+  },
+  {
+    key: "follow_x_jp",
+    grant: 4,
+    title: "关注 Renoise Jp 的 X 账号",
+    detail: "日本官方账号，关注后再多 4 次发言机会。",
+    url: "https://x.com/renoise_jp",
+    cta: "我已关注，解锁 4 次",
+  },
+  {
+    key: "register",
+    grant: 5,
+    title: "注册 Renoise 账号",
+    detail: "注册完成后回来，最后再多 5 次发言机会。",
+    url: "https://renoise.ai",
+    cta: "我已注册，解锁 5 次",
+  },
+];
+
+function chatAllowanceFor(tier: number) {
+  return CHAT_UNLOCKS.slice(0, Math.min(tier, CHAT_UNLOCKS.length - 1) + 1)
+    .reduce((total, step) => total + step.grant, 0);
+}
+
+function nextUnlock(tier: number) {
+  const step = CHAT_UNLOCKS[tier + 1];
+  if (!step) return null;
+  return { key: step.key, grant: step.grant, title: step.title, detail: step.detail, url: step.url, cta: step.cta };
+}
+
+async function viewerTier(userId: string) {
+  const [row] = await db.select().from(viewerPerks).where(eq(viewerPerks.user_id, userId)).limit(1);
+  return row?.tier ?? 0;
+}
+
+async function chatAllowanceState(matchId: number) {
+  if (!auth.user) return null;
+  if (isHostAccount()) {
+    return { unlimited: true, used: 0, allowance: 0, remaining: 0, tier: CHAT_UNLOCKS.length - 1, next: null };
+  }
+  const [tally] = await db.select({ n: sql<number>`count(*)` }).from(chatMessages)
+    .where(and(eq(chatMessages.match_id, matchId), eq(chatMessages.user_id, auth.user.id)));
+  const tier = await viewerTier(auth.user.id);
+  const used = Number(tally?.n ?? 0);
+  const allowance = chatAllowanceFor(tier);
+  return {
+    unlimited: false,
+    used,
+    allowance,
+    remaining: Math.max(0, allowance - used),
+    tier,
+    next: nextUnlock(tier),
+  };
+}
+
 const CHAT_COOLDOWN_SECONDS = 4;
 
 // A handle, not the address: chat is public and an email is not.
@@ -1889,6 +1956,14 @@ const app = new Hono()
     ));
     if (Number(recent?.n ?? 0) > 0) return c.json({ error: "发得太快了，缓一缓再说" }, 429);
 
+    const allowance = await chatAllowanceState(match.id);
+    if (allowance && !allowance.unlimited && allowance.remaining <= 0) {
+      return c.json({
+        error: allowance.next ? "发言次数用完了" : "发言次数已经全部用完了",
+        allowance,
+      }, 403);
+    }
+
     const roster = await db.select().from(participants).where(and(
       eq(participants.match_id, match.id),
       or(isNotNull(participants.character_draft_id), eq(participants.is_system, true)),
@@ -1903,7 +1978,26 @@ const app = new Hono()
       body,
       mentions: JSON.stringify(mentions),
     }).returning();
-    return c.json({ message: chatPayload(row), mentions }, 201);
+    return c.json({ message: chatPayload(row), mentions, allowance: await chatAllowanceState(match.id) }, 201);
+  })
+  .post("/api/public/chat/unlock", async (c) => {
+    if (!auth.user) return c.json({ error: "请先登录" }, 401);
+    const data = asObject(await c.req.json().catch(() => ({})));
+    const step = cleanText(data.step, 24);
+    const match = await ensureLiveMatch();
+    const tier = await viewerTier(auth.user.id);
+    const pending = nextUnlock(tier);
+    // Only the step actually on offer can be claimed, so a replayed call cannot skip a rung.
+    if (!pending || pending.key !== step) {
+      return c.json({ error: "这个解锁已经完成了", allowance: await chatAllowanceState(match.id) }, 409);
+    }
+    await db.insert(viewerPerks)
+      .values({ user_id: auth.user.id, tier: tier + 1 })
+      .onConflictDoUpdate({
+        target: viewerPerks.user_id,
+        set: { tier: tier + 1, updated_at: new Date().toISOString() },
+      });
+    return c.json({ allowance: await chatAllowanceState(match.id) });
   })
   .get("/api/admin/generation-tier", async (c) => {
     if (!isHostAccount()) return c.json({ error: "当前账号没有导演权限" }, 403);
@@ -2039,6 +2133,7 @@ const app = new Hono()
       match,
       // Oldest first: the room reads top to bottom.
       chat: chat.reverse().map(chatPayload),
+      chat_allowance: await chatAllowanceState(match.id),
       chat_waiting: chat.filter((item) => !item.consumed_at).length,
       participants: rosterWithUrls,
       events,

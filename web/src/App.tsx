@@ -343,6 +343,7 @@ function App() {
         <ChatRoom
           messages={live.chat ?? []}
           waiting={live.chat_waiting ?? 0}
+          allowance={live.chat_allowance ?? null}
           participants={live.participants}
           isAuthenticated={isAuthenticated}
           onRequireLogin={() => setLoginOpen(true)}

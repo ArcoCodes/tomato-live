@@ -85,6 +85,13 @@
       "when": 1788339876064,
       "tag": "0011_lazy_warhawk",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1788341517467,
+      "tag": "0012_silly_molly_hayes",
+      "breakpoints": true
     }
   ]
 }

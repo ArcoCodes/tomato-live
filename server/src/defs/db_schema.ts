@@ -144,6 +144,18 @@ export const directorVotes = sqliteTable("director_votes", {
   uniqueIndex("director_votes_unique").on(table.round_id, table.voter_hash),
 ]);
 
+// How far a viewer has unlocked their speaking allowance. Nothing here can be verified from the
+// server — following an account off-site leaves no trace we can read — so the row records what the
+// viewer said they did, and the allowance follows from it.
+export const viewerPerks = sqliteTable("viewer_perks", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  user_id: text("user_id").notNull(),
+  tier: integer("tier").notNull().default(0),
+  updated_at: text("updated_at").notNull().default(sql`(current_timestamp)`),
+}, (table) => [
+  uniqueIndex("viewer_perks_user_unique").on(table.user_id),
+]);
+
 // Viewer chat. Messages are both the room's conversation and the queue the show pulls its next
 // beat from, which is why consumption is tracked on the row itself.
 export const chatMessages = sqliteTable("chat_messages", {
