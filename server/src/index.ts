@@ -907,6 +907,12 @@ async function miniMaxChat(system: string, user: string, maxTokens: number) {
   return cleanText(message.content, 800);
 }
 
+const REASONING_HEADROOM = 1400;
+
+function chatBudget(forOutput: number) {
+  return forOutput + REASONING_HEADROOM;
+}
+
 // The viewer writes in whatever language they like; the video prompt reads better as one English
 // action line. If the model is unavailable we pass the original text straight through.
 // Viewers type one short line. That alone yields a flat clip, so the model expands it into a real
@@ -1521,7 +1527,7 @@ async function summarizeClip(generation: typeof generations.$inferSelect) {
             "Write that sentence, giving the situation or the outcome of it.",
           ].join("\n"),
       ].join("\n\n"),
-      400,
+      chatBudget(200),
     );
   try {
     // The writer fails intermittently under load, and a dropped line leaves a hole in the timeline
@@ -1783,6 +1789,87 @@ async function claimChatCue(matchId: number, availableIds: number[]) {
     .where(and(eq(chatMessages.id, pick.id), isNull(chatMessages.consumed_at)))
     .returning();
   return claimed ?? null;
+}
+
+// The room seeds itself when real viewers are quiet. These land in the same queue as everyone
+// else's lines, so a seeded message is a real instruction that gets filmed, not decoration.
+const CHAT_SEED_HANDLES = [
+  "kaito92", "mira_", "notdave", "eelsoup", "grimjr", "pixel_hana", "th3orist", "mossy",
+  "vantablack", "roachking", "sundae", "bugbear", "nine_lives", "orbital", "kettle",
+];
+const CHAT_SEED_QUEUE_FLOOR = 2;
+const CHAT_SEED_GAP_SECONDS = 45;
+
+async function maybeSeedChat(match: typeof matches.$inferSelect) {
+  const matchId = match.id;
+  try {
+    requireMiniMax();
+    const [waiting] = await db.select({ n: sql<number>`count(*)` }).from(chatMessages)
+      .where(and(eq(chatMessages.match_id, matchId), isNull(chatMessages.consumed_at)));
+    // Only speak up when the room has gone quiet; real viewers always take priority.
+    if (Number(waiting?.n ?? 0) >= CHAT_SEED_QUEUE_FLOOR) return null;
+
+    const [recent] = await db.select({ n: sql<number>`count(*)` }).from(chatMessages)
+      .where(and(
+        eq(chatMessages.match_id, matchId),
+        sql`${chatMessages.device_id} like 'seed:%'`,
+        sql`${chatMessages.created_at} >= datetime('now', ${`-${CHAT_SEED_GAP_SECONDS} seconds`})`,
+      ));
+    if (Number(recent?.n ?? 0) > 0) return null;
+
+    const roster = await db.select().from(participants).where(and(
+      eq(participants.match_id, matchId),
+      or(isNotNull(participants.character_draft_id), eq(participants.is_system, true)),
+    ));
+    if (!roster.length) return null;
+    const names = roster.map((item) => item.display_name);
+    const timeline = await recentSummaries(matchId, 4).catch(() => [] as string[]);
+
+    const written = await miniMaxChat(
+      [
+        "You are one viewer in the live chat of a survival reality show. Write ONE chat message.",
+        "Rules:",
+        "- Under 90 characters. One line. No quotes around it.",
+        `- Tell a contestant what to do next, and name them with @. Contestants: ${names.map((n) => `@${n}`).join(", ")}.`,
+        "- You may name two of them in one message if you want them in the same shot.",
+        "- Sound like a person watching a stream at 1am: casual, lowercase, blunt, sometimes funny.",
+        "- Never sound like a narrator, an assistant, or an announcer. No 'let us', no 'perhaps', no stage directions.",
+        "- It has to be a doable physical action on a storm-hit island, not a feeling or a compliment.",
+        "Output the message only.",
+      ].join("\n"),
+      timeline.length
+        ? `What just happened:\n${timeline.map((line, i) => `${i + 1}. ${line}`).join("\n")}`
+        : "The broadcast is just starting.",
+      chatBudget(120),
+    );
+
+    const body = cleanText(written, CHAT_MAX_CHARS).replace(/^["']|["']$/g, "");
+    // A reply with nobody in it would film as an unaimed cue and waste the beat.
+    if (body.length < 6 || !/@/.test(body)) {
+      console.error("[seed] unusable reply", JSON.stringify({ written, body }));
+      return null;
+    }
+    const mentions = mentionedParticipants(body, roster, -1).map((item) => item.id).slice(0, 3);
+    if (!mentions.length) {
+      console.error("[seed] no mention matched", JSON.stringify({ body, names }));
+      return null;
+    }
+
+    const handle = CHAT_SEED_HANDLES[Math.floor(Math.random() * CHAT_SEED_HANDLES.length)];
+    const [row] = await db.insert(chatMessages).values({
+      match_id: matchId,
+      user_id: "",
+      device_id: `seed:${handle}`,
+      display_name: handle,
+      body,
+      mentions: JSON.stringify(mentions),
+    }).returning();
+    return row;
+  } catch (error) {
+    // A quiet room is better than a broken heartbeat.
+    console.error("[seed] failed", error instanceof Error ? error.message : String(error));
+    return null;
+  }
 }
 
 const HOUSE_CAST_CUE = "Take the next concrete step in your own plan on this island, and run into a new complication while doing it.";
@@ -2105,6 +2192,7 @@ const app = new Hono()
   .get("/api/public/live", async (c) => {
     const match = await ensureLiveMatch();
     // There is no scheduler here, so the house cast advances on the back of the viewer heartbeat.
+    await maybeSeedChat(match);
     await maybeAdvanceHouseCast(match);
     const [roster, allEvents, clips, pendingGenerations] = await Promise.all([
       db.select().from(participants)
