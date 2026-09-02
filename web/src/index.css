@@ -70,7 +70,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .join-action span { margin-left: 12px; }
 .join-action:hover { transform: translateY(-1px); background: var(--brand-deep); box-shadow: 0 6px 18px rgba(230, 75, 34, .3); }
 
-.live-grid { flex: 1 1 0; min-height: 420px; display: grid; grid-template-columns: minmax(250px, 23%) minmax(460px, 1fr) minmax(270px, 24%); gap: 12px; padding: 12px; overflow: hidden; }
+.live-grid { flex: 1 1 0; min-height: 420px; width: 100%; max-width: 1180px; margin: 0 auto; display: grid; grid-template-columns: minmax(190px, 230px) minmax(280px, 400px) minmax(300px, 1fr); gap: 12px; padding: 12px; overflow: hidden; }
 .roster-panel, .chat-panel { position: relative; min-width: 0; min-height: 0; background: var(--surface); border-radius: var(--r-xl); box-shadow: var(--sh-2); overflow: hidden; display: flex; flex-direction: column; }
 .panel-heading { min-height: 66px; padding: 15px 16px 12px; display: flex; align-items: flex-end; justify-content: space-between; border-bottom: 1px solid var(--line); }
 .panel-heading h2 { margin: 3px 0 0; font-family: var(--display); font-size: 24px; font-weight: 400; letter-spacing: .04em; }
@@ -94,7 +94,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 
 .broadcast { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
 .broadcast-media { width: 100%; flex: 1 1 0; min-height: 120px; display: grid; place-items: center; container-type: size; }
-.broadcast-frame { position: relative; width: min(100cqw, calc(100cqh * 16 / 9)); aspect-ratio: 16 / 9; overflow: hidden; border-radius: var(--r-xl); background: var(--stage); box-shadow: var(--sh-3); }
+.broadcast-frame { position: relative; width: min(100cqw, calc(100cqh * 480 / 832)); aspect-ratio: 480 / 832; overflow: hidden; border-radius: var(--r-xl); background: var(--stage); box-shadow: var(--sh-3); }
 .broadcast video { width: 100%; height: 100%; object-fit: contain; display: block; background: var(--stage); }
 .stream-video { position: absolute; inset: 0; opacity: 0; background: var(--stage); transform: translateZ(0); transition: opacity .16s linear; }
 .stream-video.is-active { opacity: 1; z-index: 1; }
@@ -301,14 +301,41 @@ fieldset { border: 0; padding: 0; margin: 0 0 20px; }
 
 @media (max-width: 1100px) {
   .topbar { grid-template-columns: 1fr auto; }.match-title { display: none; }.viewer-count { display: none; }
-  .live-grid { grid-template-columns: 210px minmax(460px, 1fr); }.chat-panel { display: none; }
+  .live-grid { grid-template-columns: minmax(190px, 1fr) minmax(280px, 340px) minmax(240px, 1.2fr); }
   .action-bar { grid-template-columns: 190px 1fr; }.action-options { grid-template-columns: repeat(3, 1fr); }
 }
 
 @media (max-width: 760px) {
-  .topbar { height: 64px; padding: 0 14px; }.brand-lockup strong { font-size: 20px; }.brand-lockup div span, .text-action { display: none; }.join-action { height: 36px; padding: 0 14px; }
-  .live-grid { height: auto; min-height: 0; display: flex; flex-direction: column; padding: 10px; gap: 10px; }.broadcast { order: 1; }.broadcast-media { flex: none; container-type: normal; }.broadcast-frame { width: 100%; }
-  .roster-panel { order: 2; }.panel-heading { min-height: 58px; }.roster-list { grid-auto-flow: column; grid-auto-columns: 48px; grid-template-columns: none; overflow-x: auto; }.chat-panel { display: flex; order: 3; }.chat-panel { max-height: 340px; }
+  .topbar { height: 56px; padding: 0 12px; }.brand-lockup strong { font-size: 18px; }.brand-lockup div span, .text-action { display: none; }.brand-mark { width: 30px; height: 30px; }.join-action { height: 34px; padding: 0 13px; font-size: 12px; }
+  .match-title { display: none; }
+  .viewer-count { font-size: 8px; }
+  .live-grid { flex: none; height: auto; min-height: 0; max-width: none; display: flex; flex-direction: column; padding: 8px; gap: 8px; overflow: visible; }
+  .live-grid > * { flex: none; }
+  .broadcast { order: 1; gap: 6px; flex: none; }
+  /* The stage keeps 9:16 but is capped so the chat under it is on screen without scrolling. */
+  .broadcast-media { flex: none; container-type: normal; background: var(--stage); border-radius: var(--r-lg); box-shadow: var(--sh-2); }
+  .broadcast-frame { width: auto; height: min(54vh, calc(100vw - 16px) * 832 / 480); max-width: 100%; margin: 0 auto; border-radius: 0; box-shadow: none; }
+  .channel-bar { padding: 6px; gap: 6px; }
+  .channel-bar button { min-width: 0; padding: 6px 10px 6px 6px; gap: 7px; }
+  .channel-bar button i { width: 30px; height: 30px; }
+  .channel-bar button strong { font-size: 12px; }
+  .channel-bar button small { font-size: 8px; }
+  .clip-history { padding: 2px 8px 0; }
+  .clip-history-track { padding: 6px 0 2px; }
+  .clip-history-track button { width: 84px; padding: 8px 0 0; }
+  .clip-thumb { height: 44px; }
+  .clip-meta { padding: 2px 3px 0; }
+  .clip-meta strong { font-size: 11px; }
+  .roster-panel { order: 3; }
+  .panel-heading { min-height: 48px; padding: 10px 14px; }
+  .panel-heading h2 { font-size: 20px; }
+  .roster-list { grid-auto-flow: column; grid-auto-columns: 42px; grid-template-columns: none; overflow-x: auto; padding: 10px; }
+  .chat-panel { display: flex; order: 2; max-height: none; min-height: 300px; }
+  .chat-list { padding: 10px 12px; gap: 9px; }
+  .chat-compose { padding: 8px 10px 10px; }
+  /* 16px keeps iOS from zooming the page when the field takes focus. */
+  .chat-field input { font-size: 16px; height: 40px; }
+  .chat-field button { height: 40px; }
   .spectator-bar, .action-bar { height: auto; min-height: 120px; padding: 16px 14px; }.spectator-bar { grid-template-columns: 1fr auto; }.spectator-bar p { display: none; }.action-bar { grid-template-columns: 1fr; }.action-options { grid-template-columns: repeat(3, 1fr); }
   footer { padding: 0 14px; min-height: 42px; } footer > span { display: none; } footer div { width: 100%; justify-content: space-between; gap: 8px; }
   .join-dialog, .auth-dialog, .director-dialog { padding: 26px 18px 20px; }.prompt-section { grid-template-columns: 1fr; }.director-roster { grid-template-columns: repeat(2, 1fr); }.choice-grid { grid-template-columns: repeat(2, 1fr); }
@@ -406,3 +433,21 @@ fieldset { border: 0; padding: 0; margin: 0 0 20px; }
 .chat-unlock-close:hover { color: var(--muted); }
 
 @keyframes card-in { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: none; } }
+
+/* ---- phone overrides (must come after the component rules above) ---- */
+@media (max-width: 760px) {
+  /* Under 16px iOS zooms the page when the field takes focus, and never zooms back. */
+  .chat-field input { font-size: 16px; height: 40px; }
+  .chat-field button { height: 40px; padding: 0 16px; }
+  .chat-list { padding: 10px 12px; gap: 9px; }
+  .chat-line p { font-size: 13.5px; }
+  .chat-panel { min-height: 260px; }
+  .chat-unlock-card { max-width: min(320px, calc(100vw - 36px)); }
+  /* Touch scrolls the strip directly; the arrows are a pointer affordance. */
+  .clip-nav { display: none; }
+  .clip-history-track { scroll-snap-type: x proximity; }
+  .clip-history-track button { scroll-snap-align: start; }
+  .roster-hint { display: none; }
+  .app-toast { left: 12px; right: 12px; transform: none; text-align: center; }
+  @keyframes toast-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+}

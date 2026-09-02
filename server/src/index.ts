@@ -9,9 +9,10 @@ const RENOISE_DEFAULT_BASE_URL = "https://www.renoise.ai/api/public/v1";
 const MINIMAX_DEFAULT_BASE_URL = "https://api.minimax.io";
 const CHARACTER_MODEL = "image-01";
 // The character sheet doubles as the opening frame of that contestant's channel, and MiniMax takes
-// the video ratio from the input image (`ratio` is ignored for image-to-video), so it must be 16:9.
-const CHARACTER_RATIO = "16:9";
-const CHARACTER_RESOLUTION = "1366x768";
+// the video ratio from the input image (`ratio` is ignored for image-to-video), so the sheet's
+// aspect ratio IS the broadcast's aspect ratio. Portrait, because most of the audience is on a phone.
+const CHARACTER_RATIO = "9:16";
+const CHARACTER_RESOLUTION = "768x1366";
 const LIVE_VIDEO_MODEL = "MiniMax-H3-Max";
 const LEGACY_LIVE_VIDEO_MODEL = "hailuo-h3-max";
 const LIVE_VIDEO_RESOLUTION = "480P";
@@ -619,7 +620,7 @@ function characterPrompt(brief: CharacterBrief, accent: string) {
     `SUBJECT: transform the same person into a ${brief.role} prepared for a near-future tropical island survival broadcast.`,
     `SIGNATURE — must be clearly visible and unmistakable in the frame: ${brief.signature}`,
     `WARDROBE: ${brief.wardrobe}. Add a restrained ${accent} identification accent. No helmet, no mask.`,
-    "COMPOSITION: horizontal 16:9 establishing frame, the contestant full body from head to boots, standing slightly off-centre, hands visible, readable silhouette, room to breathe around the body.",
+    "COMPOSITION: vertical 9:16 portrait frame, the contestant full body from head to boots, centred, hands visible, readable silhouette, headroom above and ground below.",
     "SCENE/BACKGROUND: a rain-soaked tropical coast at dusk — wet rock, wind-bent palms, low storm cloud filling the rest of the frame; cinematic but the contestant stays the unmistakable subject.",
     "LIGHTING/MATERIALS: documentary realism, overcast key light, warm field-lamp rim, tactile wet fabric and natural skin texture.",
     "PRESERVE: facial identity, age, skin tone, ethnicity, hairstyle, distinctive facial features, and natural body proportions from the source photo.",
