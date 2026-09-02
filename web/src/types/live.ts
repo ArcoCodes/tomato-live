@@ -122,5 +122,4 @@ export interface CharacterCost {
   sufficient: boolean;
   available: boolean;
   notice?: string;
-  prompt: string;
 }

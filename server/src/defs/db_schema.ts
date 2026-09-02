@@ -44,6 +44,11 @@ export const characterDrafts = sqliteTable("character_drafts", {
   renoise_task_id: text("renoise_task_id"),
   model: text("model").notNull().default("gpt-image-2"),
   prompt: text("prompt").notNull(),
+  // What the viewer actually typed, before the agent enriched it.
+  concept: text("concept"),
+  // The text half of the character: written alongside the sheet from the same enriched brief, so the
+  // wording that reproduces this person in later clips is bound to the image from the start.
+  appearance: text("appearance"),
   status: text("status", { enum: ["generating", "ready", "failed", "claimed"] }).notNull().default("generating"),
   estimated_credit: text("estimated_credit"),
   error_message: text("error_message"),
@@ -76,6 +81,8 @@ export const participants = sqliteTable("participants", {
   // Written once by a vision model from the character sheet. H3-Max sees only the opening frame, so
   // this text is what stops the contestant drifting over a long tail-frame chain.
   appearance: text("appearance"),
+  // House cast: seeded, not claimable, and preferred when the director picks whose footage to cut to.
+  is_system: integer("is_system", { mode: "boolean" }).notNull().default(false),
   joined_at: text("joined_at").notNull().default(sql`(current_timestamp)`),
 }, (table) => [
   index("participants_match_idx").on(table.match_id),

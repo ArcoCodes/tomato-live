@@ -2,7 +2,6 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { client } from "@/lib/edgespark";
 import type { CharacterCost, CharacterDraft, CharacterDraftControl, PlayerControl } from "@/types/live";
 
-const archetypes = ["野外医生", "机械师", "侦察兵", "植物学家", "攀登者", "厨师"];
 const accents = ["#e64b22", "#1d7874", "#b4530a", "#4a4e9c", "#a6273f"];
 const DRAFT_STORAGE_KEY = "tomato-live-character-draft";
 
@@ -25,7 +24,7 @@ function readDraftControl(): CharacterDraftControl | null {
 
 export function JoinDialog({ open, onClose, onJoined }: JoinDialogProps) {
   const [name, setName] = useState("");
-  const [archetype, setArchetype] = useState(archetypes[0]);
+  const [concept, setConcept] = useState("");
   const [accent, setAccent] = useState(accents[0]);
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
@@ -66,8 +65,7 @@ export function JoinDialog({ open, onClose, onJoined }: JoinDialogProps) {
     let cancelled = false;
     const timer = window.setTimeout(async () => {
       try {
-        const query = new URLSearchParams({ archetype, accent });
-        const response = await client.api.fetch(`/api/public/character/cost?${query.toString()}`);
+        const response = await client.api.fetch("/api/public/character/cost");
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || "无法读取角色生成额度");
         if (!cancelled) {
@@ -82,7 +80,7 @@ export function JoinDialog({ open, onClose, onJoined }: JoinDialogProps) {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [accent, archetype, open, stage]);
+  }, [open, stage]);
 
   useEffect(() => {
     if (!open || !draftControl || stage !== "generating") return;
@@ -103,7 +101,6 @@ export function JoinDialog({ open, onClose, onJoined }: JoinDialogProps) {
         if (cancelled) return;
         setDraft(result.draft);
         setName(result.draft.displayName);
-        setArchetype(result.draft.archetype);
         setAccent(result.draft.accent);
         if (result.draft.status === "ready") setStage("ready");
         if (result.draft.status === "failed") {
@@ -160,7 +157,7 @@ export function JoinDialog({ open, onClose, onJoined }: JoinDialogProps) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           displayName: name,
-          archetype,
+          concept,
           accent,
           avatarPath: presign.path,
           creditApproved: true,
@@ -243,14 +240,18 @@ export function JoinDialog({ open, onClose, onJoined }: JoinDialogProps) {
                 <input value={name} onChange={(event) => setName(event.target.value)} maxLength={20} placeholder="例如：北岸来客" required />
               </label>
 
-              <fieldset>
-                <legend>生存专长</legend>
-                <div className="choice-grid">
-                  {archetypes.map((item) => (
-                    <button type="button" className={item === archetype ? "selected" : ""} onClick={() => { setArchetype(item); setCreditApproved(false); }} key={item}>{item}</button>
-                  ))}
-                </div>
-              </fieldset>
+              <label className="field-label">
+                <span>你想成为什么样的角色</span>
+                <textarea
+                  value={concept}
+                  onChange={(event) => { setConcept(event.target.value); setCreditApproved(false); }}
+                  maxLength={300}
+                  rows={3}
+                  placeholder="随便写：身份、脾气、随身带着什么、身上有什么别人一眼认得出的东西……"
+                  required
+                />
+                <small>导演会把它扩写成完整设定，并给你一个非常显眼的标志性特征。</small>
+              </label>
 
               <fieldset>
                 <legend>识别色</legend>
@@ -261,19 +262,14 @@ export function JoinDialog({ open, onClose, onJoined }: JoinDialogProps) {
                 </div>
               </fieldset>
 
-              <details className="prompt-disclosure">
-                <summary>查看完整角色生成提示词</summary>
-                <pre>{cost?.prompt || "正在读取生成配置…"}</pre>
-              </details>
-
               <label className="credit-consent">
                 <input type="checkbox" checked={creditApproved} onChange={(event) => setCreditApproved(event.target.checked)} />
-                <span>我已查看完整提示词，并确认由 {cost?.displayName || "MiniMax 图片模型"} 生成 1 张角色定妆图。</span>
+                <span>确认由导演扩写我的描述，并用 {cost?.displayName || "MiniMax 图片模型"} 生成 1 张角色定妆图。每个账号只能创建 1 个角色。</span>
               </label>
 
               {cost?.notice && <p className="channel-notice">{cost.notice}</p>}
               {error && <p className="form-error">{error}</p>}
-              <button className="primary-action" disabled={busy || name.trim().length < 2 || !file || !cost?.available || !cost.sufficient || !creditApproved}>
+              <button className="primary-action" disabled={busy || name.trim().length < 2 || concept.trim().length < 4 || !file || !cost?.available || !cost.sufficient || !creditApproved}>
                 {busy ? "正在提交角色生成…" : "生成我的参赛角色"}
               </button>
               <p className="consent-copy">原照片仅作为角色身份参考；定妆图完成后，本站会删除原照片存储副本。请仅上传你有权使用的照片。</p>

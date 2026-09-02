@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { db, secret, storage, vars } from "edgespark";
 import { auth } from "edgespark/http";
@@ -544,12 +544,79 @@ function taskResultUrl(payload: unknown) {
   return candidates.find((value): value is string => typeof value === "string" && value.startsWith("http")) ?? null;
 }
 
-function characterPrompt(archetype: string, accent: string) {
+// The viewer writes a free-form idea; the agent turns it into a production brief. The sheet and the
+// identity-lock paragraph are both cut from this same brief, which is what keeps the text half and the
+// image half describing one person.
+type CharacterBrief = {
+  archetype: string;
+  role: string;
+  signature: string;
+  wardrobe: string;
+  appearance: string;
+};
+
+function fallbackBrief(concept: string): CharacterBrief {
+  const trimmed = cleanText(concept, 60) || "幸存者";
+  return {
+    archetype: trimmed.slice(0, 12),
+    role: "survival-show contestant",
+    signature: "a single hand-made object they never put down",
+    wardrobe: "practical weathered expedition gear, layered fabric, utility straps",
+    appearance: "",
+  };
+}
+
+function extractJsonObject(raw: string): JsonObject | null {
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  try {
+    return asObject(JSON.parse(raw.slice(start, end + 1)));
+  } catch {
+    return null;
+  }
+}
+
+async function expandCharacterConcept(displayName: string, concept: string): Promise<CharacterBrief> {
+  const fallback = fallbackBrief(concept);
+  try {
+    const raw = await miniMaxChat(
+      [
+        "You are the character designer on a gritty documentary-style survival reality show.",
+        "A viewer has described the contestant they want to play. Expand it into a production brief.",
+        "Rules:",
+        "- Give the contestant ONE very distinctive visual signature: a single unmistakable physical feature a viewer could pick out of a crowd in one frame. An object always carried, a scar or marking, an unusual garment, hair, a prosthetic, a tool lashed to the body. Make it specific and strange, never generic.",
+        "- Enrich what the viewer asked for. Never replace their idea with your own.",
+        "- Stay grounded in documentary realism: no fantasy armour, no superpowers, no glowing technology, no mask covering the face.",
+        "- Output strict JSON and nothing else. No markdown fence, no commentary.",
+        "JSON shape:",
+        '{"archetype": "身份标签，2 到 6 个中文字", "role": "the same identity as a short English noun phrase", "signature": "one English sentence naming the single distinctive feature", "wardrobe": "one English sentence: the outfit layer by layer with exact colours and materials", "appearance": "ONE dense English paragraph under 110 words covering face shape and features, skin tone, hair, build, then the outfit layer by layer, then the distinctive signature. Plain concrete words. No name, no story, no camera or lighting talk."}',
+      ].join("\n"),
+      `Contestant name: ${displayName}\nViewer description: ${concept}`,
+      900,
+    );
+    const parsed = extractJsonObject(raw);
+    if (!parsed) return fallback;
+    return {
+      archetype: cleanText(parsed.archetype, 12) || fallback.archetype,
+      role: cleanText(parsed.role, 80) || fallback.role,
+      signature: cleanText(parsed.signature, 240) || fallback.signature,
+      wardrobe: cleanText(parsed.wardrobe, 240) || fallback.wardrobe,
+      appearance: cleanText(parsed.appearance, 700),
+    };
+  } catch {
+    // A brief we wrote ourselves still produces a sheet; it just will not be as distinctive.
+    return fallback;
+  }
+}
+
+function characterPrompt(brief: CharacterBrief, accent: string) {
   return [
     "USE: identity-preserving cinematic survival-contestant character portrait.",
     "SOURCE: the attached photo is the contestant identity reference.",
-    `SUBJECT: transform the same person into a ${archetype} prepared for a near-future tropical island survival broadcast.`,
-    `WARDROBE: practical weathered expedition gear with a restrained ${accent} identification accent, layered fabric, utility straps, no helmet, no mask.`,
+    `SUBJECT: transform the same person into a ${brief.role} prepared for a near-future tropical island survival broadcast.`,
+    `SIGNATURE — must be clearly visible and unmistakable in the frame: ${brief.signature}`,
+    `WARDROBE: ${brief.wardrobe}. Add a restrained ${accent} identification accent. No helmet, no mask.`,
     "COMPOSITION: horizontal 16:9 establishing frame, the contestant full body from head to boots, standing slightly off-centre, hands visible, readable silhouette, room to breathe around the body.",
     "SCENE/BACKGROUND: a rain-soaked tropical coast at dusk — wet rock, wind-bent palms, low storm cloud filling the rest of the frame; cinematic but the contestant stays the unmistakable subject.",
     "LIGHTING/MATERIALS: documentary realism, overcast key light, warm field-lamp rim, tactile wet fabric and natural skin texture.",
@@ -1142,7 +1209,7 @@ async function queueLiveGeneration(request: GenerationRequest, createdBy: string
   const match = await ensureLiveMatch();
   const selected = await db.select({ id: participants.id }).from(participants).where(and(
     eq(participants.match_id, match.id),
-    isNotNull(participants.character_draft_id),
+    or(isNotNull(participants.character_draft_id), eq(participants.is_system, true)),
     inArray(participants.id, participantIds),
   ));
   if (selected.length !== participantIds.length) {
@@ -1385,13 +1452,15 @@ async function summarizeClip(generation: typeof generations.$inferSelect) {
     sourceSummary = source?.summary ?? "";
   }
 
-  const fallback = generation.viewer_prompt
-    ? `${who}：${generation.viewer_prompt}`
+  // The house cast is driven by an internal English cue, not by a viewer. Never let that cue surface
+  // as the story line when the writer falls through.
+  const authored = generation.created_by.startsWith("house:") ? "" : generation.viewer_prompt;
+  const fallback = authored
+    ? `${who}：${authored}`
     : sourceSummary || `${who}仍在风暴里坚持。`;
   let summary = fallback;
-  try {
-    const timeline = await recentSummaries(generation.match_id, 8);
-    const written = await miniMaxChat(
+  const timeline = await recentSummaries(generation.match_id, 8).catch(() => [] as string[]);
+  const writeSummary = () => miniMaxChat(
       [
         "你是一档荒岛生存真人秀的解说，负责把零散的片段串成一条连贯的故事线。",
         "根据下面的故事时间线和这一段发生的事，写一句不超过 40 字的中文解说，推进故事：交代人物在做什么、处境如何、或者出现了什么转折。",
@@ -1409,12 +1478,18 @@ async function summarizeClip(generation: typeof generations.$inferSelect) {
           ].join("\n")
           : [
             `这一段是 ${who} 的视角。`,
-            `${who} 这一步要做的是：${generation.viewer_prompt ?? "继续推进生存目标"}`,
+            authored
+              ? `${who} 这一步要做的是：${authored}`
+              : `${who} 正在自己推进求生计划，并撞上了新的麻烦。`,
             "请写这一句，说明他这么做的处境或结果。",
           ].join("\n"),
       ].join("\n\n"),
       200,
     );
+  try {
+    // The writer fails intermittently under load, and a dropped line leaves a hole in the timeline
+    // that every later summary reads from. One retry is worth it.
+    const written = await writeSummary().catch(() => writeSummary());
     if (written) summary = cleanText(written, 120);
   } catch {
     // Keep the template line.
@@ -1473,6 +1548,66 @@ async function pickDirectorSource(matchId: number) {
 
 // Chained off a tail frame landing: EdgeSpark has no scheduler, so the director line advances on the
 // back of the request that made new footage usable.
+// Nobody submits prompts for the house cast, so the show writes their storylines itself. They run on
+// ordinary contestant channels — same identity anchoring, same tail-frame chain — which is what lets
+// the director cut to them exactly as it cuts to a viewer's contestant, and what keeps the broadcast
+// moving when no viewer has asked for anything.
+const HOUSE_CAST_ACTIVE_SLOTS = 2;
+// Guardrails on a loop that would otherwise run for as long as one browser tab stays open.
+const HOUSE_CAST_MIN_GAP_SECONDS = 20;
+const HOUSE_CAST_MAX_CLIPS = 120;
+const HOUSE_CAST_CUE = "Take the next concrete step in your own plan on this island, and run into a new complication while doing it.";
+
+async function maybeAdvanceHouseCast(matchId: number) {
+  try {
+    requireMiniMax();
+    const active = await activeGenerations(matchId);
+    // Leave the rest of the queue for viewers: the house cast never fills it.
+    if (active.length >= HOUSE_CAST_ACTIVE_SLOTS) return null;
+
+    const [tally] = await db.select({
+      total: sql<number>`count(*)`,
+      recent: sql<number>`sum(case when ${generations.created_at} >= datetime('now', ${`-${HOUSE_CAST_MIN_GAP_SECONDS} seconds`}) then 1 else 0 end)`,
+    }).from(generations)
+      .where(and(eq(generations.match_id, matchId), sql`${generations.created_by} like 'house:%'`));
+    if (Number(tally?.total ?? 0) >= HOUSE_CAST_MAX_CLIPS) return null;
+    if (Number(tally?.recent ?? 0) > 0) return null;
+
+    const cast = await db.select().from(participants)
+      .where(and(eq(participants.match_id, matchId), eq(participants.is_system, true)));
+    if (!cast.length) return null;
+    const busy = new Set(active.map((item) => item.channel_participant_id));
+
+    const clipRows = await db.select({ pid: generations.channel_participant_id, id: generations.id })
+      .from(generations)
+      .where(and(eq(generations.match_id, matchId), eq(generations.channel, "participant")))
+      .orderBy(desc(generations.id));
+    const lastClip = new Map<number, number>();
+    for (const row of clipRows) {
+      if (row.pid != null && !lastClip.has(row.pid)) lastClip.set(row.pid, row.id);
+    }
+    // Whoever has been off screen longest goes next.
+    const next = cast
+      .filter((item) => !busy.has(item.id))
+      .sort((a, b) => (lastClip.get(a.id) ?? -1) - (lastClip.get(b.id) ?? -1))[0];
+    if (!next) return null;
+
+    return await queueLiveGeneration({
+      channel: "participant",
+      channelParticipantId: next.id,
+      participantIds: [next.id],
+      keyframePrompt: "",
+      videoPrompt: "",
+      visualMemory: "",
+      duration: LIVE_VIDEO_DURATION_SECONDS,
+      viewerPrompt: HOUSE_CAST_CUE,
+    }, "house:auto");
+  } catch {
+    // The house cast stalling must never break the request that happened to tick it.
+    return null;
+  }
+}
+
 async function maybeStartDirectorClip(matchId: number) {
   try {
     requireMiniMax();
@@ -1598,9 +1733,14 @@ const app = new Hono()
   .get("/api/public/health", (c) => c.json({ ok: true, service: "tomato-live" }))
   .get("/api/public/live", async (c) => {
     const match = await ensureLiveMatch();
+    // There is no scheduler here, so the house cast advances on the back of the viewer heartbeat.
+    await maybeAdvanceHouseCast(match.id);
     const [roster, allEvents, clips, pendingGenerations] = await Promise.all([
       db.select().from(participants)
-        .where(and(eq(participants.match_id, match.id), isNotNull(participants.character_draft_id)))
+        .where(and(
+          eq(participants.match_id, match.id),
+          or(isNotNull(participants.character_draft_id), eq(participants.is_system, true)),
+        ))
         .orderBy(desc(participants.score)),
       db.select().from(matchEvents).where(eq(matchEvents.match_id, match.id)).orderBy(desc(matchEvents.id)).limit(50),
       db.select().from(generations).where(and(eq(generations.match_id, match.id), eq(generations.stage, "completed"))).orderBy(desc(generations.id)).limit(60),
@@ -1740,8 +1880,6 @@ const app = new Hono()
     return c.json({ path, uploadUrl: signed.uploadUrl, requiredHeaders: signed.requiredHeaders });
   })
   .get("/api/public/character/cost", async (c) => {
-    const archetype = cleanText(c.req.query("archetype"), 30) || "探索者";
-    const accent = cleanText(c.req.query("accent"), 16) || ACCENTS[0];
     return c.json({
       model: CHARACTER_MODEL,
       displayName: "MiniMax image-01",
@@ -1752,7 +1890,6 @@ const app = new Hono()
       notice: secret.get("MINIMAX_API_KEY")
         ? "当前将通过 MiniMax 官方 API 生成 1 张角色定妆图。"
         : "MiniMax API Key 尚未配置，暂时不能生成角色。",
-      prompt: characterPrompt(archetype, accent),
     });
   })
   .post("/api/public/character/generations", async (c) => {
@@ -1766,7 +1903,7 @@ const app = new Hono()
     }
     const data = asObject(await c.req.json().catch(() => ({})));
     const displayName = cleanText(data.displayName, 20);
-    const archetype = cleanText(data.archetype, 30) || "探索者";
+    const concept = cleanText(data.concept, 300);
     // Contestants are told apart by colour on the story map, so a duplicate accent makes two lines
     // indistinguishable. Prefer one nobody in this match is using.
     const usedAccents = new Set((await db.select({ accent: participants.accent }).from(participants)
@@ -1778,6 +1915,7 @@ const app = new Hono()
       : freeAccents[0] ?? ACCENTS[Math.floor(Math.random() * ACCENTS.length)];
     const avatarPath = cleanText(data.avatarPath, 240);
     if (displayName.length < 2) return c.json({ error: "参赛名至少需要 2 个字符" }, 400);
+    if (concept.length < 4) return c.json({ error: "请描述一下你想成为什么样的角色，至少 4 个字" }, 400);
     if (!avatarPath || !avatarPath.startsWith("avatars/")) return c.json({ error: "请先上传一张有效的本人照片" }, 400);
     if (data.creditApproved !== true) return c.json({ error: "请先确认本次角色生成将调用 MiniMax 官方 API" }, 400);
     try {
@@ -1802,13 +1940,16 @@ const app = new Hono()
 
     const publicId = crypto.randomUUID();
     const controlToken = crypto.randomUUID();
-    const prompt = characterPrompt(archetype, accent);
+    const brief = await expandCharacterConcept(displayName, concept);
+    const prompt = characterPrompt(brief, accent);
     const [draft] = await db.insert(characterDrafts).values({
       public_id: publicId,
       control_token_hash: await sha256(controlToken),
       requester_hash: requesterHash,
       display_name: displayName,
-      archetype,
+      archetype: brief.archetype,
+      concept,
+      appearance: brief.appearance || null,
       accent,
       source_s3_uri: storage.createS3Uri(buckets.characterAvatars, avatarPath),
       model: CHARACTER_MODEL,
@@ -1942,6 +2083,7 @@ const app = new Hono()
       archetype: draft.archetype,
       accent: draft.accent,
       avatar_s3_uri: draft.generated_s3_uri,
+      appearance: draft.appearance,
       renoise_material_id: draft.renoise_generated_material_id,
       control_token_hash: await sha256(controlToken),
       status: "alive",
@@ -2007,7 +2149,7 @@ const app = new Hono()
 
     const roster = await db.select().from(participants).where(and(
       eq(participants.match_id, match.id),
-      isNotNull(participants.character_draft_id),
+      or(isNotNull(participants.character_draft_id), eq(participants.is_system, true)),
     ));
 
     // Opting to continue from a clip you were written into: that frame already holds both people in
