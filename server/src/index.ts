@@ -926,7 +926,40 @@ async function promptsForViewerInput({
 
 // The director channel stitches the contestant channels together, so its prompt leans on the rolling
 // timeline rather than on any single viewer's instruction.
-function promptsForDirectorCut({
+// The opening frame is the END of a contestant's shot. Without saying so, the model just replays
+// the beat that already aired — the cutaway has to be told that time moves on.
+async function expandDirectorCut(sourceStory: string, timeline: string[], lead: string, condition: string) {
+  const beatSeconds = Math.round(LIVE_VIDEO_DURATION_SECONDS / 3);
+  try {
+    const shot = await miniMaxChat(
+      [
+        "You are the shot designer for the broadcast cutaway of a gritty survival reality show.",
+        `Write an English video-generation prompt for one ${LIVE_VIDEO_DURATION_SECONDS}-second cutaway.`,
+        "Critical: the opening frame is the LAST frame of a contestant's own shot. That beat has already aired.",
+        "Rules:",
+        "- Do NOT repeat, re-stage or continue the action that just ended. Time moves forward from it.",
+        "- Open on that frame and immediately pull back into a wide establishing broadcast shot, then keep the camera drifting — crane up, arc around, settle on the widest view.",
+        "- Show the wider situation instead of the contestant's hands: the terrain, the weather closing in, distance still to cover, what is about to become a problem.",
+        `- Three escalating beats of about ${beatSeconds} seconds each, written as "0-${beatSeconds}s: ...".`,
+        "- Keep the location, weather, wardrobe and colour grade continuous with the opening frame.",
+        "- End with one line starting 'Audio:' describing a calm English-speaking commentator narrating the situation over storm ambience.",
+        "- No on-screen text, subtitles, captions or graphics. Write everything in English.",
+        "Output only the prompt itself, no preamble.",
+      ].join("\n"),
+      [
+        sourceStory ? `The frame we open on is the end of: ${sourceStory}` : "The frame we open on is a contestant on a storm-lit coast.",
+        timeline.length ? `Story so far: ${timeline.join(" ")}` : "This is early in the match.",
+        `Contestant visible in the frame: ${lead} — ${condition}`,
+      ].join("\n"),
+      900,
+    );
+    return shot || "";
+  } catch {
+    return "";
+  }
+}
+
+async function promptsForDirectorCut({
   participant,
   sourceStory,
   timeline,
@@ -936,27 +969,34 @@ function promptsForDirectorCut({
   timeline: string[];
 }) {
   const recap = timeline.length ? `Story so far: ${timeline.join(" ")}` : "Story so far: the storm is closing in on the island and the contestants are still scattered.";
+  const condition = contestantCondition(participant);
+  const expanded = await expandDirectorCut(sourceStory, timeline, participant.display_name, condition);
   const sharedContinuity = [
-    sourceStory ? `Continue from this clean visual memory: ${sourceStory}.` : "Opening situation: a lone survival contestant is on a rain-soaked remote coast as a storm approaches.",
+    sourceStory
+      ? `The opening frame is where ${participant.display_name}'s last shot ended: ${sourceStory}. That beat is over — this cutaway takes place after it.`
+      : "Opening situation: a lone survival contestant is on a rain-soaked remote coast as a storm approaches.",
     recap,
-    `Physical condition: ${contestantCondition(participant)}.`,
+    `Physical condition: ${condition}.`,
   ].join("\n");
   return {
-    visualMemory: `${sourceStory || recap}; stormy remote coast; documentary handheld realism; no on-screen graphics`,
+    visualMemory: cleanText(expanded || `${sourceStory || recap}; stormy remote coast; documentary handheld realism; no on-screen graphics`, 600),
     keyframePrompt: [
       "Create a cinematic 16:9 broadcast frame for a survival challenge using the supplied opening frame.",
       sharedContinuity,
       NO_SCREEN_TEXT_PROMPT,
     ].join("\n"),
     videoPrompt: [
-      `Continue the survival challenge broadcast for exactly ${LIVE_VIDEO_DURATION_SECONDS} seconds as a single unbroken shot.`,
+      `Continue the survival challenge broadcast for exactly ${LIVE_VIDEO_DURATION_SECONDS} seconds.`,
       sharedContinuity,
-      "Action: carry the moment in the opening frame forward and escalate it; let the situation develop without resolving it.",
-      // The director line is the show's god's-eye cut, so it opens out of the contestant's own framing.
-      "Camera: start on the supplied frame and pull back into a wide establishing broadcast shot that reveals the whole location and where the contestant sits in it, then keep drifting — crane up, arc around, settle on the widest view.",
-      PACING_PROMPT,
+      "The action in the opening frame has already finished. Do not repeat or re-stage it; move time forward from it.",
+      expanded || [
+        "Action: show what the situation looks like now — the terrain, the weather closing in, what is about to become a problem. Not a rerun of the beat that just ended.",
+        // The director line is the show's god's-eye cut, so it opens out of the contestant's own framing.
+        "Camera: start on the supplied frame and pull back into a wide establishing broadcast shot that reveals the whole location and where the contestant sits in it, then keep drifting — crane up, arc around, settle on the widest view.",
+        PACING_PROMPT,
+        DIRECTOR_AUDIO_PROMPT,
+      ].join("\n"),
       "Continuity: preserve the contestant identity, wardrobe, location, weather, color grade and camera style from the first frame.",
-      DIRECTOR_AUDIO_PROMPT,
       NO_SCREEN_TEXT_PROMPT,
       "Avoid new people, face morphing, fantasy effects, sudden costume changes, or jumping to a different location.",
     ].join("\n"),
@@ -1157,12 +1197,13 @@ async function startQueuedGeneration(generation: typeof generations.$inferSelect
   const guests = selected.filter((item) => item.id !== lead.id);
 
   // A link continues from a clip this contestant was written into; its tail frame holds both people.
-  let openingFrameS3Uri: string | null = null;
+  let sourceClip: typeof generations.$inferSelect | null = null;
   if (generation.source_generation_id != null) {
-    const [source] = await db.select({ thumbnail_url: generations.thumbnail_url }).from(generations)
+    const [row] = await db.select().from(generations)
       .where(eq(generations.id, generation.source_generation_id)).limit(1);
-    openingFrameS3Uri = source?.thumbnail_url ?? null;
+    sourceClip = row ?? null;
   }
+  const openingFrameS3Uri = sourceClip?.thumbnail_url ?? null;
 
   const latestClip = await latestChannelClip(
     generation.match_id,
@@ -1184,9 +1225,11 @@ async function startQueuedGeneration(generation: typeof generations.$inferSelect
       visualMemory: cleanText(queuedPrompt.visualMemory, 1000),
     }
     : generation.channel === "director"
-    ? promptsForDirectorCut({
+    ? await promptsForDirectorCut({
       participant: lead,
-      sourceStory: storyTextFromGeneration(latestClip),
+      // The frame comes from sourceClip, so the written memory has to come from there too —
+      // reading the director channel's own previous clip described a different shot entirely.
+      sourceStory: storyTextFromGeneration(sourceClip),
       timeline: await recentVisualMemories(generation.match_id, 3),
     })
     : await promptsForViewerInput({
@@ -1357,8 +1400,8 @@ async function summarizeClip(generation: typeof generations.$inferSelect) {
         generation.channel === "director"
           ? [
             "这一段是全局视角的赛况画面，用来交代当前整体局势。",
-            sourceSummary ? `最近发生的是：${sourceSummary}` : `画面里是 ${who}。`,
-            "请从旁观全局的角度写这一句，可以交代局势、天气压力，或某个人此刻的处境。",
+            sourceSummary ? `刚刚播过的是：${sourceSummary}（不要复述它）` : `画面里是 ${who}。`,
+            "请从旁观全局的角度写这一句，交代局势往哪走、天气压力，或某个人接下来要面对什么。不要重复刚刚播过的内容。",
           ].join("\n")
           : [
             `这一段是 ${who} 的视角。`,
