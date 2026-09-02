@@ -35,6 +35,8 @@ interface Mark {
   x: number;
   y: number;
   own: boolean;
+  /** Nth guest on this clip, so co-located guests draw as concentric rings instead of overlapping. */
+  ring: number;
 }
 
 export function MatchTimeline({ participants, clips, activeChannel, onSelectChannel, onComposeChannel }: {
@@ -65,14 +67,17 @@ export function MatchTimeline({ participants, clips, activeChannel, onSelectChan
       if (!involved) continue;
       const others = clip.participant_ids.filter((id) => id !== participant.id && baseY.has(id));
       const home = baseY.get(participant.id)!;
-      const pull = others.length
-        ? others.reduce((sum, id) => sum + (baseY.get(id)! - home), 0) / others.length * 0.42
-        : 0;
+      // Everyone in a shared clip lands on the same point — the centroid of the lines involved —
+      // so the lines actually meet rather than merely leaning at each other.
+      const involvedYs = [home, ...others.map((id) => baseY.get(id)!)];
+      const meeting = involvedYs.reduce((sum, value) => sum + value, 0) / involvedYs.length;
+      const guests = clip.participant_ids.filter((id) => id !== clip.channel_participant_id && baseY.has(id));
       marks.push({
         clip,
         x: xOf.get(clip.id)!,
-        y: home + pull + (others.length ? 0 : wobble(clip.id + participant.id)),
+        y: others.length ? meeting : home + wobble(clip.id + participant.id),
         own: clip.channel_participant_id === participant.id,
+        ring: Math.max(guests.indexOf(participant.id), 0),
       });
     }
     return { participant, marks, home: baseY.get(participant.id)! };
@@ -174,14 +179,19 @@ export function MatchTimeline({ participants, clips, activeChannel, onSelectChan
                 {mark.clip.id === latestId && mark.own ? (
                   <circle cx={mark.x} cy={mark.y} r={10} fill="none" stroke={participant.accent} strokeWidth={1.5} opacity={0.4} />
                 ) : null}
-                <circle
-                  cx={mark.x}
-                  cy={mark.y}
-                  r={mark.own ? 5.5 : 4}
-                  fill={mark.own ? participant.accent : "var(--surface)"}
-                  stroke={participant.accent}
-                  strokeWidth={mark.own ? 0 : 2}
-                />
+                {mark.own ? (
+                  <circle cx={mark.x} cy={mark.y} r={5.5} fill={participant.accent} />
+                ) : (
+                  // A guest sits on the same point as the owner, so it reads as a ring around it.
+                  <circle
+                    cx={mark.x}
+                    cy={mark.y}
+                    r={9 + mark.ring * 3.5}
+                    fill="none"
+                    stroke={participant.accent}
+                    strokeWidth={2}
+                  />
+                )}
               </g>
             )))}
           </g>
