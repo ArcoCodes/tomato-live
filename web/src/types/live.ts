@@ -72,20 +72,6 @@ export interface PendingGeneration {
   created_at: string;
 }
 
-export interface DirectorVoteOption {
-  key: "a" | "b";
-  label: string;
-  votes: number;
-}
-
-/** An open fork on the director line: both candidates are already generating while viewers vote. */
-export interface DirectorVote {
-  id: number;
-  closes_at: string;
-  options: DirectorVoteOption[];
-  my_vote: "a" | "b" | null;
-}
-
 export interface LiveData {
   match: MatchInfo;
   participants: Participant[];
@@ -94,7 +80,6 @@ export interface LiveData {
   story_choices: StoryChoice[];
   pending_generation: PendingGeneration | null;
   pending_generations: PendingGeneration[];
-  director_vote: DirectorVote | null;
   /** Contestant clips whose tail frame nobody has captured yet; the browser harvests these. */
   tail_frame_wanted: number[];
   generated_at: string;

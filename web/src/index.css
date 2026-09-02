@@ -123,7 +123,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .fog { position: absolute; left: -20%; width: 140%; height: 90px; background: rgba(226,214,205,.07); filter: blur(24px); border-radius: 50%; }
 .fog-a { bottom: 20%; animation: fog 18s linear infinite; }.fog-b { bottom: 42%; opacity: .4; animation: fog 27s linear infinite reverse; }
 .rain { position: absolute; inset: -20%; opacity: .2; background-image: repeating-linear-gradient(105deg, transparent 0 12px, rgba(232,224,218,.5) 13px 14px, transparent 15px 32px); background-size: 45px 35px; transform: rotate(-8deg); animation: rain .7s linear infinite; }
-.broadcast-media:has(.vote-bar) .broadcast-subtitle { display: none; }
 .broadcast-subtitle { position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; padding: 34px 20px 16px; background: linear-gradient(transparent, rgba(12,9,7,.9)); pointer-events: none; }
 .broadcast-subtitle span { display: block; margin-bottom: 6px; font: 7px var(--utility); letter-spacing: .16em; color: #ff9670; font-weight: 600; }
 .broadcast-subtitle p { margin: 0; max-width: 780px; color: #fdfaf8; font-size: 13px; line-height: 1.65; text-shadow: 0 1px 5px rgba(0,0,0,.85); }
@@ -136,20 +135,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .gen-progress-copy span { color: rgba(255,255,255,.72); font-size: 10px; }
 @keyframes gen-crawl { from { width: var(--from); } to { width: var(--to); } }
 @keyframes soft-blink { 50% { opacity: .25; } }
-.vote-bar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 6; padding: 34px 16px 14px; background: linear-gradient(transparent, rgba(12,9,7,.92)); }
-.vote-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
-.vote-head span { color: #fff; font: 9px var(--utility); letter-spacing: .16em; font-weight: 600; }
-.vote-head b { color: #fff; font: 20px var(--display); letter-spacing: .04em; font-weight: 400; }
-.vote-head b.is-urgent { color: #ff9670; }
-.vote-options { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.vote-option { position: relative; overflow: hidden; display: flex; align-items: baseline; gap: 8px; padding: 11px 13px; border: 1px solid rgba(255,255,255,.24); border-radius: var(--r-md); background: rgba(255,255,255,.1); color: #fdfaf8; text-align: left; cursor: pointer; backdrop-filter: blur(6px); transition: background .16s ease, border-color .16s ease; }
-.vote-option:not(:disabled):hover { background: rgba(255,255,255,.2); border-color: rgba(255,255,255,.5); }
-.vote-option.is-picked { border-color: var(--brand); background: rgba(230,75,34,.32); }
-.vote-option:disabled { cursor: default; }
-/* Share bar sits behind the label so the count reads as a filling meter. */
-.vote-option i { position: absolute; inset: 0 auto 0 0; background: rgba(230,75,34,.42); transition: width .4s ease; }
-.vote-option strong { position: relative; flex: 1; min-width: 0; font-size: 13px; font-weight: 600; }
-.vote-option small { position: relative; font: 9px var(--utility); opacity: .8; }
 .sound-toggle { position: absolute; right: 12px; top: 12px; z-index: 4; padding: 7px 13px; border: 0; border-radius: var(--r-pill); background: rgba(255,255,255,.14); color: #fdfaf8; font: 8px var(--utility); letter-spacing: .1em; cursor: pointer; backdrop-filter: blur(8px); transition: background .16s ease, color .16s ease; }
 .sound-toggle:hover { background: rgba(255,255,255,.24); }
 .broadcast-media:has(.gen-progress) .sound-toggle { top: 62px; }
