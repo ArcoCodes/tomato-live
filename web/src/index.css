@@ -358,6 +358,9 @@ fieldset { border: 0; padding: 0; margin: 0 0 20px; }
 .chat-who { color: var(--muted); font: 9px var(--utility); letter-spacing: .06em; }
 .chat-line p { margin: 0; font-size: 12.5px; line-height: 1.6; word-break: break-word; }
 .chat-line p b { font-weight: 600; }
+.chat-jump { align-self: flex-start; margin-top: 3px; padding: 2px 9px; border: 0; border-radius: var(--r-pill); background: var(--brand-soft); color: var(--brand-deep); font: 8px var(--utility); font-weight: 600; letter-spacing: .08em; cursor: pointer; transition: background .16s ease, color .16s ease; }
+.chat-jump:hover { background: var(--brand); color: #fff; }
+.chat-jump span { margin-left: 4px; }
 .chat-line em { align-self: flex-start; margin-top: 3px; padding: 1px 7px; border-radius: var(--r-pill); background: var(--brand-soft); color: var(--brand-deep); font: 8px var(--utility); font-style: normal; font-weight: 600; letter-spacing: .08em; }
 .chat-line.is-filmed p { color: var(--muted); }
 .chat-compose { position: relative; flex: none; padding: 10px 12px 12px; border-top: 1px solid var(--line); }

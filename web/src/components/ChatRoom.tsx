@@ -10,6 +10,8 @@ interface ChatRoomProps {
   participants: Participant[];
   waiting: number;
   allowance: ChatAllowance | null;
+  /** Told which clip a message became, so the badge can take the viewer to it. */
+  onShowClip: (generationId: number) => void;
   isAuthenticated: boolean;
   onRequireLogin: () => void;
   onSent: () => void;
@@ -26,7 +28,7 @@ function renderBody(body: string, byName: Map<string, Participant>) {
   });
 }
 
-export function ChatRoom({ messages, participants, waiting, allowance, isAuthenticated, onRequireLogin, onSent }: ChatRoomProps) {
+export function ChatRoom({ messages, participants, waiting, allowance, onShowClip, isAuthenticated, onRequireLogin, onSent }: ChatRoomProps) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
@@ -163,7 +165,11 @@ export function ChatRoom({ messages, participants, waiting, allowance, isAuthent
             <div className={message.filmed ? "chat-line is-filmed" : "chat-line"} key={message.id}>
               <span className="chat-who">{message.display_name}</span>
               <p>{renderBody(message.body, byName)}</p>
-              {message.filmed ? <em>已拍成画面</em> : null}
+              {message.filmed ? (
+                message.generation_id != null
+                  ? <button type="button" className="chat-jump" onClick={() => onShowClip(message.generation_id!)}>看这一段 <span>→</span></button>
+                  : <em>已拍成画面</em>
+              ) : null}
             </div>
           ))}
       </div>

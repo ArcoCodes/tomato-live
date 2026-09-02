@@ -84,6 +84,7 @@ function App() {
   const [error, setError] = useState("");
   const [joinOpen, setJoinOpen] = useState(false);
   const [toast, setToast] = useState("");
+  const [jumpRequest, setJumpRequest] = useState<number | null>(null);
   const [directorOpen, setDirectorOpen] = useState(false);
   const [controls, setControls] = useState<PlayerControl[]>(() => readControls());
   const [loginOpen, setLoginOpen] = useState(false);
@@ -339,6 +340,8 @@ function App() {
           activeChannel={activeChannel}
           onSelectChannel={setActiveChannel}
           myPendingStage={myPendingStage}
+          jumpRequest={jumpRequest}
+          onJumpHandled={() => setJumpRequest(null)}
         />
         <ChatRoom
           messages={live.chat ?? []}
@@ -346,6 +349,16 @@ function App() {
           allowance={live.chat_allowance ?? null}
           participants={live.participants}
           isAuthenticated={isAuthenticated}
+          onShowClip={(generationId) => {
+            // A chat line's clip lives on whichever channel filmed it, so switch there first.
+            const clip = live.clips.find((item) => item.id === generationId);
+            if (!clip) {
+              setToast("这一段还没进直播队列");
+              return;
+            }
+            setActiveChannel(channelKeyFor(clip));
+            setJumpRequest(generationId);
+          }}
           onRequireLogin={() => setLoginOpen(true)}
           onSent={() => void refresh(true)}
         />

@@ -76,7 +76,7 @@ function GenerationProgress({ stage }: { stage: "queued" | "keyframe" | "video" 
   );
 }
 
-export function Broadcast({ clips, participants, channels, activeChannel, onSelectChannel, myPendingStage }: {
+export function Broadcast({ clips, participants, channels, activeChannel, onSelectChannel, myPendingStage, jumpRequest, onJumpHandled }: {
   clips: BroadcastClip[];
   /** Needed to show whose clip each archive card is, by character sheet rather than by name. */
   participants: Participant[];
@@ -85,6 +85,9 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
   onSelectChannel: (key: string) => void;
   /** This viewer's own generation, if one is running — it gets a prominent bar, not a small label. */
   myPendingStage?: "queued" | "keyframe" | "video";
+  /** A clip the chat asked to show. Cleared once played so the same request cannot re-fire. */
+  jumpRequest?: number | null;
+  onJumpHandled?: () => void;
 }) {
   const playable = useMemo(
     () => clips
@@ -371,6 +374,15 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
     }
     holdOnLastFrame();
   }
+
+  useEffect(() => {
+    if (jumpRequest == null) return;
+    if (!playable.some((item) => item.id === jumpRequest)) return;
+    jumpToClip(jumpRequest);
+    onJumpHandled?.();
+    // jumpToClip is stable enough for this: it only reads refs and setState.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jumpRequest, playable]);
 
   function jumpToClip(id: number) {
     if (id === clip?.id && !handoffStartedRef.current) {

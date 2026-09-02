@@ -841,10 +841,18 @@ function escapeForRegExp(value: string) {
 
 // Viewers pull other contestants into their shot by writing @name. H3-Max takes only one opening
 // frame, so a guest can only enter through their identity-lock text — which is exactly what we have.
+// In the order they were named, not the order of the roster. The first person mentioned is the one
+// the viewer is writing about, and downstream that decides whose shot it is.
 function mentionedParticipants(viewerPrompt: string, roster: Array<typeof participants.$inferSelect>, selfId: number) {
-  return roster.filter((item) => item.id !== selfId
-    && item.status !== "eliminated"
-    && new RegExp(`@\\s*${escapeForRegExp(item.display_name)}`, "i").test(viewerPrompt));
+  return roster
+    .filter((item) => item.id !== selfId && item.status !== "eliminated")
+    .map((item) => ({
+      item,
+      at: viewerPrompt.search(new RegExp(`@\\s*${escapeForRegExp(item.display_name)}`, "i")),
+    }))
+    .filter((hit) => hit.at >= 0)
+    .sort((a, b) => a.at - b.at)
+    .map((hit) => hit.item);
 }
 
 function buildStoryChoices(
@@ -2095,7 +2103,24 @@ const app = new Hono()
       portrait_url: await avatarUrl(participant.portrait_s3_uri ?? participant.avatar_s3_uri),
       control_token_hash: undefined,
     })));
-    const clipList = clips.map((clip) => ({
+    // Chat keeps a longer memory than the clip window does, so a line filmed a while back would
+    // point at a clip the page no longer has and its "看这一段" would go nowhere. Pull those back in.
+    const chat = await db.select().from(chatMessages)
+      .where(eq(chatMessages.match_id, match.id))
+      .orderBy(desc(chatMessages.id))
+      .limit(40);
+    const haveClipIds = new Set(clips.map((clip) => clip.id));
+    const missingClipIds = [...new Set(chat
+      .map((item) => item.generation_id)
+      .filter((id): id is number => id != null && !haveClipIds.has(id)))];
+    const referencedClips = missingClipIds.length
+      ? await db.select().from(generations).where(and(
+        eq(generations.match_id, match.id),
+        eq(generations.stage, "completed"),
+        inArray(generations.id, missingClipIds),
+      ))
+      : [];
+    const clipList = [...clips, ...referencedClips].map((clip) => ({
       id: clip.id,
       round: clip.round,
       duration_seconds: clip.duration_seconds,
@@ -2125,10 +2150,6 @@ const app = new Hono()
       created_at: item.created_at,
     }));
     const pendingGeneration = pendingList[0] ?? null;
-    const chat = await db.select().from(chatMessages)
-      .where(eq(chatMessages.match_id, match.id))
-      .orderBy(desc(chatMessages.id))
-      .limit(40);
     return c.json({
       match,
       // Oldest first: the room reads top to bottom.
