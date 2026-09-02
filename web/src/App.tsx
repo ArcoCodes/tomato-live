@@ -82,7 +82,6 @@ function App() {
   const [joinOpen, setJoinOpen] = useState(false);
   const [directorOpen, setDirectorOpen] = useState(false);
   const [controls, setControls] = useState<PlayerControl[]>(() => readControls());
-  const [activeParticipantId, setActiveParticipantId] = useState<number | null>(() => readControls()[0]?.participantId ?? null);
   const [loginOpen, setLoginOpen] = useState(false);
   const [accountCharacterIds, setAccountCharacterIds] = useState<number[]>([]);
   const [quota, setQuota] = useState<{ used: number; limit: number; remaining: number } | null>(null);
@@ -116,9 +115,11 @@ function App() {
     return [...ids];
   }, [accountCharacterIds, controls]);
 
-  const activeId = activeParticipantId != null && ownedIds.includes(activeParticipantId)
-    ? activeParticipantId
-    : ownedIds[0] ?? null;
+  // The channel you are watching is the character you are directing — keeping "viewed" and
+  // "controlled" as separate states meant opening your other character's channel left the composer
+  // pointed at the first one, so the bar fell back to the timeline.
+  const viewedId = activeChannel.startsWith("p:") ? Number(activeChannel.slice(2)) : null;
+  const activeId = viewedId != null && ownedIds.includes(viewedId) ? viewedId : null;
   const control: PlayerControl | null = activeId == null
     ? null
     : controls.find((item) => item.participantId === activeId) ?? { participantId: activeId, controlToken: "" };
@@ -209,7 +210,7 @@ function App() {
   }, [control?.participantId, live]);
 
   const myPendingStage = (live?.pending_generations ?? [])
-    .find((item) => item.channel_participant_id === control?.participantId)?.stage;
+    .find((item) => item.channel_participant_id === activeId)?.stage;
 
   const channelClips = useMemo(
     () => (live?.clips ?? []).filter((clip) => channelKeyFor(clip) === activeChannel),
@@ -257,7 +258,7 @@ function App() {
       writeControls(merged);
       return merged;
     });
-    setActiveParticipantId(next.participantId);
+    setActiveChannel(`p:${next.participantId}`);
   }
 
   async function handleSignOut() {
@@ -270,7 +271,7 @@ function App() {
       writeControls(kept);
       return kept;
     });
-    setActiveParticipantId(null);
+    setActiveChannel(DIRECTOR_CHANNEL);
   }
 
   function openJoin() {
@@ -331,25 +332,27 @@ function App() {
         <EventFeed events={live.events} />
       </main>
 
-      {myParticipant && control && activeChannel === `p:${myParticipant.id}` ? (
+      {myParticipant && control ? (
         <ActionBar
           participant={myParticipant}
           roster={live.participants}
           myCharacters={myCharacters}
-          onSwitchCharacter={setActiveParticipantId}
+          onSwitchCharacter={(id) => setActiveChannel(`p:${id}`)}
           linkOffers={linkOffers}
           control={control}
           choices={live.story_choices}
           pendingGeneration={(live.pending_generations ?? []).find((item) => item.channel_participant_id === myParticipant.id) ?? null}
           onUpdated={() => refresh(true)}
         />
-      ) : myParticipant ? (
+      ) : ownedIds.length ? (
         <MatchTimeline
           participants={live.participants.filter((item) => item.status !== "eliminated")}
           clips={live.clips}
           activeChannel={activeChannel}
           onSelectChannel={setActiveChannel}
-          onComposeChannel={{ key: `p:${myParticipant.id}`, label: myParticipant.display_name }}
+          onComposeChannel={myCharacters[0]
+            ? { key: `p:${myCharacters[0].id}`, label: myCharacters[0].display_name }
+            : undefined}
         />
       ) : (
         <section className="spectator-bar">
