@@ -22,17 +22,17 @@ export function DirectorDialog({ open, onClose, participants, pendingGeneration,
   const [videoPrompt, setVideoPrompt] = useState(defaultVideoPrompt);
   const [busy, setBusy] = useState(false);
   const [generationId, setGenerationId] = useState<number | null>(null);
-  const [stage, setStage] = useState("等待生成");
+  const [stage, setStage] = useState("Idle");
   const [error, setError] = useState("");
 
   // No polling here — App runs one heartbeat for every channel. This just reads the result of it.
   useEffect(() => {
     if (!generationId) return;
     if (pendingGeneration?.id === generationId) {
-      setStage(pendingGeneration.stage === "video" ? `H3 Max 正在生成 ${CLIP_SECONDS} 秒片段` : "正在提交生成任务");
+      setStage(pendingGeneration.stage === "video" ? `H3 Max is rendering a ${CLIP_SECONDS}s clip` : "Submitting the job");
       return;
     }
-    setStage("片段已进入直播队列");
+    setStage("Clip is in the broadcast queue");
     setGenerationId(null);
     setBusy(false);
     onCompleted();
@@ -49,7 +49,7 @@ export function DirectorDialog({ open, onClose, participants, pendingGeneration,
   async function submit() {
     setBusy(true);
     setError("");
-    setStage("正在准备首帧并提交 MiniMax 官方任务");
+    setStage("Preparing the opening frame and submitting to MiniMax");
     try {
       // Host-only now: the public create endpoint took an arbitrary prompt from anyone.
       const response = await client.api.fetch("/api/director/generations", {
@@ -58,45 +58,45 @@ export function DirectorDialog({ open, onClose, participants, pendingGeneration,
         body: JSON.stringify({ participantIds: selected, keyframePrompt, videoPrompt, duration: CLIP_SECONDS }),
       });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "生成任务提交失败");
+      if (!response.ok) throw new Error(result.error || "Could not submit the job");
       setGenerationId(result.generation.id);
-      setStage(result.generation.stage === "video" ? `MiniMax H3 Max 正在生成 ${CLIP_SECONDS} 秒片段` : "正在准备首帧");
+      setStage(result.generation.stage === "video" ? `MiniMax H3 Max is rendering a ${CLIP_SECONDS}s clip` : "Preparing the opening frame");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "生成任务提交失败");
+      setError(cause instanceof Error ? cause.message : "Could not submit the job");
       setBusy(false);
-      setStage("等待生成");
+      setStage("Idle");
     }
   }
 
   return (
     <div className="modal-backdrop director-backdrop">
       <div className="director-dialog" role="dialog" aria-modal="true" aria-labelledby="director-title">
-        <button className="modal-close" onClick={onClose} aria-label="关闭">×</button>
+        <button className="modal-close" onClick={onClose} aria-label="Close">×</button>
         <div className="dialog-index">LIVE PIPELINE / H3 MAX</div>
-        <h2 id="director-title">生成下一段</h2>
-        <p className="dialog-intro">手动向总导播通道插入一段。系统优先用最近一段角色视角的尾帧作为首帧，没有素材时回退到参赛角色图。</p>
+        <h2 id="director-title">Cut the next clip</h2>
+        <p className="dialog-intro">Insert a clip into the director channel by hand. It opens on the most recent contestant tail frame, falling back to a character sheet when there is no footage.</p>
 
         <section className="director-section">
-          <span className="step-label">01 / 角色</span>
+          <span className="step-label">01 / CAST</span>
           <div className="director-roster">
             {eligible.length ? eligible.map((participant) => (
               <button className={selected.includes(participant.id) ? "selected" : ""} onClick={() => toggleParticipant(participant.id)} key={participant.id}>
                 <img src={(participant.portrait_url ?? participant.avatar_url)!} alt="" />
                 <span>{participant.display_name}<small>{participant.archetype}</small></span>
               </button>
-            )) : <p>还没有上传角色照片的存活参赛者。</p>}
+            )) : <p>No living contestant has a character sheet yet.</p>}
           </div>
         </section>
 
         <section className="director-section prompt-section">
-          <label><span className="step-label">02 / 首段关键帧提示词</span><textarea value={keyframePrompt} onChange={(event) => setKeyframePrompt(event.target.value)} /></label>
-          <label><span className="step-label">03 / {CLIP_SECONDS} 秒续接提示词</span><textarea value={videoPrompt} onChange={(event) => setVideoPrompt(event.target.value)} /></label>
+          <label><span className="step-label">02 / OPENING FRAME PROMPT</span><textarea value={keyframePrompt} onChange={(event) => setKeyframePrompt(event.target.value)} /></label>
+          <label><span className="step-label">03 / {CLIP_SECONDS}s SHOT PROMPT</span><textarea value={videoPrompt} onChange={(event) => setVideoPrompt(event.target.value)} /></label>
         </section>
 
         {busy && <div className="pipeline-status"><i /><span>{stage}</span></div>}
         {error && <p className="form-error">{error}</p>}
         <button className="primary-action" disabled={selected.length === 0 || busy} onClick={submit}>
-          {busy ? "生成进行中" : `直接生成 ${CLIP_SECONDS} 秒片段`}
+          {busy ? "Rendering" : `Film a ${CLIP_SECONDS}s clip`}
         </button>
       </div>
     </div>

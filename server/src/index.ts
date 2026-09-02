@@ -21,7 +21,7 @@ const CHARACTER_RATE_LIMIT_PER_HOUR = 3;
 const CHARACTER_LIMIT_PER_USER = 1;
 // Character creation is closed while the house cast carries the show. Flip to true to reopen it.
 const CHARACTER_CREATION_OPEN = false;
-const CHARACTER_CREATION_CLOSED_NOTICE = "角色创建功能马上开放，敬请期待。";
+const CHARACTER_CREATION_CLOSED_NOTICE = "Character creation opens soon — hang tight.";
 const CHARACTER_LIMIT_HOST = 12;
 // Mid-dark hues: they sit on white with enough contrast to carry white text in the avatar tile.
 const ACCENTS = ["#e64b22", "#1d7874", "#b4530a", "#4a4e9c", "#a6273f"];
@@ -48,44 +48,44 @@ const NO_SCREEN_TEXT_PROMPT = [
 const STORY_CHOICE_BLUEPRINTS = [
   {
     id: "signal",
-    title: "追踪异常信号",
-    detail: "沿着断续电波深入雨林，可能发现补给，也可能撞上风暴前沿。",
-    action: "前往气象站",
+    title: "Chase the signal",
+    detail: "Follow the broken transmission deeper in — it could be supplies, or the leading edge of the storm.",
+    action: "Head for the weather station",
     cue: "the contestant follows a flickering emergency signal through wet jungle under rising wind",
   },
   {
     id: "beacon",
-    title: "强修救援信标",
-    detail: "冒雨打开旧信标外壳，用最后的电量换一次可见坐标。",
-    action: "修复信标",
+    title: "Force the beacon",
+    detail: "Crack the old casing in the rain and spend the last of the charge on one visible fix.",
+    action: "Repair the beacon",
     cue: "the contestant repairs a damaged rescue beacon as amber light pulses through heavy rain",
   },
   {
     id: "shelter",
-    title: "抢建临时庇护",
-    detail: "用防水布和倒木搭出避风点，牺牲移动速度换生存窗口。",
-    action: "寻找遮蔽",
+    title: "Throw up shelter",
+    detail: "Tarp and deadfall against the wind — trading mobility for a window to survive in.",
+    action: "Find cover",
     cue: "the contestant builds a low storm shelter from a tarp, branches and salvaged cord",
   },
   {
     id: "supplies",
-    title: "搜刮沉船物资",
-    detail: "趁潮水退去冲向礁石边，抢回药包、绳索或未知箱体。",
-    action: "搜索物资",
+    title: "Strip the wreck",
+    detail: "Run the rocks while the tide is out and haul back a medkit, rope, or whatever is in that crate.",
+    action: "Search for supplies",
     cue: "the contestant searches a half-submerged wreck crate on sharp black rocks",
   },
   {
     id: "team",
-    title: "支援同伴脱困",
-    detail: "放弃单人路线，去接应一个被困在泥坡下方的队友。",
-    action: "帮助队友",
+    title: "Go back for someone",
+    detail: "Abandon the solo route to reach a contestant pinned below the mud slope.",
+    action: "Help a contestant",
     cue: "the contestant helps another survivor climb out of a collapsing muddy ravine",
   },
   {
     id: "recover",
-    title: "短暂停整观察",
-    detail: "压低身形躲在树根后恢复体力，同时观察下一次安全窗口。",
-    action: "原地休息",
+    title: "Hold and watch",
+    detail: "Get low behind the roots, get some strength back, and read the next safe window.",
+    action: "Rest here",
     cue: "the contestant rests under tangled tree roots while scanning the storm-lit shoreline",
   },
 ] as const;
@@ -218,10 +218,10 @@ async function ensureLiveMatch() {
   await db.insert(matches).values({
     slug: LIVE_SLUG,
     title: "ISLAND / 00",
-    subtitle: "荒岛生存公开赛 · 第 01 季",
+    subtitle: "Island Survival Open · Season 01",
     status: "live",
     current_round: 7,
-    zone: "北岸雨林",
+    zone: "North shore rainforest",
     viewers: 12847,
   }).onConflictDoNothing({ target: matches.slug });
 
@@ -281,8 +281,8 @@ async function miniMaxFetch(path: string, init: RequestInit = {}) {
     payload = responseText ? JSON.parse(responseText) : {};
   } catch {
     const contentType = response.headers.get("content-type") || "unknown";
-    const htmlHint = /<html|<!doctype/i.test(responseText) ? "，疑似返回了网页 HTML" : "";
-    throw new Error(`MiniMax ${path} 返回了无法解析的响应 (${response.status}, ${contentType}${htmlHint})`);
+    const htmlHint = /<html|<!doctype/i.test(responseText) ? ", looks like an HTML page" : "";
+    throw new Error(`MiniMax ${path} returned an unparseable response (${response.status}, ${contentType}${htmlHint})`);
   }
   const baseResp = asObject(asObject(payload).base_resp);
   const baseStatus = Number(baseResp.status_code);
@@ -337,7 +337,7 @@ async function createMiniMaxCharacterImage(prompt: string, imageUrl: string) {
   const imageUrlResult = Array.isArray(imageUrls)
     ? imageUrls.find((value): value is string => typeof value === "string" && value.startsWith("http"))
     : null;
-  if (!imageUrlResult) throw new Error("MiniMax 角色图生成完成，但没有返回图片地址");
+  if (!imageUrlResult) throw new Error("MiniMax finished the character sheet but returned no image URL");
   return {
     id: cleanText(payload.id, 120) || crypto.randomUUID(),
     url: imageUrlResult,
@@ -360,7 +360,7 @@ async function createMiniMaxVideoTask(prompt: string, firstFrameUrl: string, dur
   }));
   const taskIdValue = payload.task_id;
   if (typeof taskIdValue !== "string" && typeof taskIdValue !== "number") {
-    throw new Error("MiniMax 视频生成没有返回 task_id");
+    throw new Error("MiniMax video generation returned no task_id");
   }
   return { id: String(taskIdValue), raw: payload };
 }
@@ -404,8 +404,8 @@ async function renoiseFetch(path: string, init: RequestInit = {}) {
     payload = responseText ? JSON.parse(responseText) : {};
   } catch {
     const contentType = response.headers.get("content-type") || "unknown";
-    const htmlHint = /<html|<!doctype/i.test(responseText) ? "，疑似返回了网页 HTML" : "";
-    throw new Error(`Renoise ${path} 返回了无法解析的响应 (${response.status}, ${contentType}${htmlHint})`);
+    const htmlHint = /<html|<!doctype/i.test(responseText) ? ", looks like an HTML page" : "";
+    throw new Error(`Renoise ${path} returned an unparseable response (${response.status}, ${contentType}${htmlHint})`);
   }
   if (!response.ok) {
     const message = cleanText(asObject(payload).message, 500) || `Renoise request failed (${response.status})`;
@@ -492,7 +492,7 @@ async function getRenoiseModel(name: string) {
   }
   const fallback = VERIFIED_MODEL_FALLBACKS[name];
   if (fallback) return fallback;
-  throw new Error(`Renoise 当前没有提供模型 ${name}`);
+  throw new Error(`Renoise does not currently offer the model ${name}`);
 }
 
 async function getCharacterImageModel() {
@@ -558,7 +558,7 @@ type CharacterBrief = {
 };
 
 function fallbackBrief(concept: string): CharacterBrief {
-  const trimmed = cleanText(concept, 60) || "幸存者";
+  const trimmed = cleanText(concept, 60) || "survivor";
   return {
     archetype: trimmed.slice(0, 12),
     role: "survival-show contestant",
@@ -592,7 +592,7 @@ async function expandCharacterConcept(displayName: string, concept: string): Pro
         "- Stay grounded in documentary realism: no fantasy armour, no superpowers, no glowing technology, no mask covering the face.",
         "- Output strict JSON and nothing else. No markdown fence, no commentary.",
         "JSON shape:",
-        '{"archetype": "身份标签，2 到 6 个中文字", "role": "the same identity as a short English noun phrase", "signature": "one English sentence naming the single distinctive feature", "wardrobe": "one English sentence: the outfit layer by layer with exact colours and materials", "appearance": "ONE dense English paragraph under 110 words covering face shape and features, skin tone, hair, build, then the outfit layer by layer, then the distinctive signature. Plain concrete words. No name, no story, no camera or lighting talk."}',
+        '{"archetype": "a 1-3 word English identity label", "role": "the same identity as a short English noun phrase", "signature": "one English sentence naming the single distinctive feature", "wardrobe": "one English sentence: the outfit layer by layer with exact colours and materials", "appearance": "ONE dense English paragraph under 110 words covering face shape and features, skin tone, hair, build, then the outfit layer by layer, then the distinctive signature. Plain concrete words. No name, no story, no camera or lighting talk."}',
       ].join("\n"),
       `Contestant name: ${displayName}\nViewer description: ${concept}`,
       900,
@@ -641,7 +641,7 @@ async function estimateRenoiseCredit(model: string, resolution: string) {
   const payload = asObject(await renoiseFetch(`/credit/estimate?${query.toString()}`));
   const data = asObject(payload.data);
   const value = Number(payload.estimatedCredit ?? data.estimatedCredit);
-  if (!Number.isFinite(value)) throw new Error("Renoise 暂时无法返回角色生成额度预估");
+  if (!Number.isFinite(value)) throw new Error("Renoise cannot estimate the character generation credit right now");
   return {
     estimatedCredit: value,
     sufficient: Boolean(payload.sufficient ?? data.sufficient),
@@ -740,11 +740,11 @@ async function removeStoredSource(s3Uri: string | null) {
 
 async function syncParticipantMaterial(participant: typeof participants.$inferSelect) {
   if (participant.renoise_material_id) return participant.renoise_material_id;
-  if (!participant.avatar_s3_uri) throw new Error(`${participant.display_name} 还没有上传角色照片`);
+  if (!participant.avatar_s3_uri) throw new Error(`${participant.display_name} has no character sheet yet`);
   const parsed = storage.tryParseS3Uri(participant.avatar_s3_uri);
-  if (!parsed) throw new Error(`${participant.display_name} 的角色照片地址无效`);
+  if (!parsed) throw new Error(`${participant.display_name} has an invalid character sheet address`);
   const object = await storage.from(parsed.bucket).get(parsed.path);
-  if (!object) throw new Error(`${participant.display_name} 的角色照片不存在`);
+  if (!object) throw new Error(`${participant.display_name} character sheet is missing`);
   const materialId = await uploadRenoiseMaterial(
     object.body,
     `participant-${participant.id}.jpg`,
@@ -802,17 +802,17 @@ function generationSlotError(
     // frame. Only the tier's ceiling limits them.
     const running = active.filter((item) => item.channel === "director");
     if (running.length >= tier.directorSlots) {
-      return { status: 409 as const, error: "导播线同时生成的片段已达上限", generation: running[0] };
+      return { status: 409 as const, error: "The director line is already at its concurrent limit", generation: running[0] };
     }
   } else {
     const sameChannel = active.find((item) =>
       item.channel === channel && (item.channel_participant_id ?? null) === participantId);
     if (sameChannel) {
-      return { status: 409 as const, error: "这条通道上一段还在生成中，等它进入直播队列后再继续", generation: sameChannel };
+      return { status: 409 as const, error: "This channel is still filming its last clip; it opens up once that lands", generation: sameChannel };
     }
   }
   if (active.length >= tier.concurrent) {
-    return { status: 429 as const, error: "同时生成的片段已达上限，稍后再试", generation: null };
+    return { status: 429 as const, error: "Too many clips rendering at once — try again shortly", generation: null };
   }
   return null;
 }
@@ -867,13 +867,13 @@ function buildStoryChoices(
   return STORY_CHOICE_BLUEPRINTS.map((choice, index) => {
     const lead = roster[index % roster.length];
     const pressure = lead.hunger > 65
-      ? "饥饿值偏高，选择会更冒险"
-      : lead.stamina < 35 ? "体力偏低，动作会更克制" : "状态仍可继续推进";
+      ? "Hunger is high, so the choices turn riskier"
+      : lead.stamina < 35 ? "Stamina is low, so the moves stay careful" : "Still in shape to push on";
     return {
       id: choice.id,
       title: choice.title,
       detail: latestStory
-        ? `${choice.detail} 当前局势：${latestStory.slice(0, 40)}…`
+        ? `${choice.detail} Right now: ${latestStory.slice(0, 60)}…`
         : choice.detail,
       participantHint: `${lead.display_name} · ${pressure}`,
       round: match.current_round,
@@ -1096,7 +1096,7 @@ function isHostAccount() {
 }
 
 async function requireDirector() {
-  if (!isHostAccount()) throw new Error("当前账号没有导演权限");
+  if (!isHostAccount()) throw new Error("This account has no host permission");
 }
 
 async function characterQuota(matchId: number) {
@@ -1133,7 +1133,7 @@ async function persistVideoResult(generationId: number, remoteUrl: string) {
     }
   }
   await db.update(generations)
-    .set({ error_message: `片段未能落盘，仍在使用临时外链：${lastReason}` })
+    .set({ error_message: `Clip upload failed, still on the provider temporary link: ${lastReason}` })
     .where(eq(generations.id, generationId))
     .catch(() => undefined);
   return remoteUrl;
@@ -1151,7 +1151,7 @@ async function persistTailFrame(generationId: number, frame: { bytes: ArrayBuffe
 async function submitH3VideoFromFrame(materialId: number, prompt: string, duration: number) {
   const videoModel = await getRenoiseModel(LEGACY_LIVE_VIDEO_MODEL);
   const materialRoles = Array.isArray(videoModel.materialRoles) ? videoModel.materialRoles : [];
-  if (!materialRoles.includes("first_frame")) throw new Error(`${LEGACY_LIVE_VIDEO_MODEL} 当前不支持首帧输入`);
+  if (!materialRoles.includes("first_frame")) throw new Error(`${LEGACY_LIVE_VIDEO_MODEL} does not accept a first frame`);
   const videoResolution = pickAdvertised(videoModel.resolutions, "768p", videoModel.defaultResolution);
   return createRenoiseTask({
     model: LEGACY_LIVE_VIDEO_MODEL,
@@ -1205,7 +1205,7 @@ async function openingFrameFor(request: GenerationRequest, selected: Array<typeo
   }
   const anchor = selected.find((item) => item.id === request.channelParticipantId) ?? selected[0];
   const url = await avatarUrl(anchor?.avatar_s3_uri ?? null);
-  if (!url) throw new Error("没有可用的角色定妆图，无法提交视频任务");
+  if (!url) throw new Error("No character sheet available, cannot submit the video job");
   return { url, s3Uri: anchor?.avatar_s3_uri ?? null, source: "character_sheet" as const };
 }
 
@@ -1232,7 +1232,7 @@ function directorRequestFrom(data: JsonObject): GenerationRequest {
 async function queueLiveGeneration(request: GenerationRequest, createdBy: string) {
   requireMiniMax();
   const participantIds = request.participantIds.filter(Number.isInteger).slice(0, 3);
-  if (participantIds.length === 0) throw new Error("请选择 1–3 名参赛者");
+  if (participantIds.length === 0) throw new Error("Pick 1-3 contestants");
   const match = await ensureLiveMatch();
   const selected = await db.select({ id: participants.id }).from(participants).where(and(
     eq(participants.match_id, match.id),
@@ -1240,7 +1240,7 @@ async function queueLiveGeneration(request: GenerationRequest, createdBy: string
     inArray(participants.id, participantIds),
   ));
   if (selected.length !== participantIds.length) {
-    const error = new Error("参赛者列表已经变化，请刷新后重试");
+    const error = new Error("The roster changed — refresh and try again");
     error.name = "ConflictError";
     throw error;
   }
@@ -1284,7 +1284,7 @@ async function startQueuedGeneration(generation: typeof generations.$inferSelect
   const participantIds = parseParticipantIds(generation.participant_ids);
   const selected = await db.select().from(participants)
     .where(and(eq(participants.match_id, generation.match_id), inArray(participants.id, participantIds)));
-  if (selected.length === 0) throw new Error("参赛者列表已经变化，请刷新后重试");
+  if (selected.length === 0) throw new Error("The roster changed — refresh and try again");
 
   // A link continues from a clip this contestant was written into; its tail frame holds both people.
   let sourceClip: typeof generations.$inferSelect | null = null;
@@ -1465,11 +1465,20 @@ async function recentSummaries(matchId: number, limit: number) {
 
 // Every finished clip leaves one timeline line: it feeds the next director prompt and, as a world
 // event, it is what viewers read in the feed. Never fatal — a clip stands on its own without it.
+// Used when the writer fails or comes back unusable. Rotating them keeps a bad stretch from
+// reading as the same sentence repeated down the whole timeline.
+const HOLDING_LINES = [
+  "{who} is still holding out in the storm.",
+  "{who} pushes on through the rain, no ground gained yet.",
+  "The weather has {who} pinned where they are.",
+  "{who} is still on their feet, and that is all the island is giving.",
+];
+
 async function summarizeClip(generation: typeof generations.$inferSelect) {
   const [participant] = generation.channel_participant_id != null
     ? await db.select().from(participants).where(eq(participants.id, generation.channel_participant_id)).limit(1)
     : [];
-  const who = participant?.display_name ?? "场上选手";
+  const who = participant?.display_name ?? "a contestant";
 
   // A director cut is a wide view of the situation, so it narrates from the clip it was cut from.
   let sourceSummary = "";
@@ -1484,40 +1493,42 @@ async function summarizeClip(generation: typeof generations.$inferSelect) {
   const authored = generation.created_by.startsWith("house:") ? "" : generation.viewer_prompt;
   const fallback = authored
     ? `${who}：${authored}`
-    : sourceSummary || `${who}仍在风暴里坚持。`;
+    : sourceSummary || HOLDING_LINES[generation.id % HOLDING_LINES.length].replace("{who}", who);
   let summary = fallback;
   const timeline = await recentSummaries(generation.match_id, 8).catch(() => [] as string[]);
   const writeSummary = () => miniMaxChat(
       [
-        "你是一档荒岛生存真人秀的解说，负责把零散的片段串成一条连贯的故事线。",
-        "根据下面的故事时间线和这一段发生的事，写一句不超过 40 字的中文解说，推进故事：交代人物在做什么、处境如何、或者出现了什么转折。",
-        "严禁描述拍摄本身。不要出现「镜头」「画面」「切换」「特写」「远景」「推进」「扫过」「入镜」「导播」这类词，也不要提到剪辑或转播。",
-        "只讲故事里的人和事，像在向观众讲述正在发生的情节。不要重复时间线里已经说过的话。",
-        "只输出这一句，不要引号、不要前缀。",
+        "You are the commentator on a desert-island survival reality show, tying scattered clips into one continuous story.",
+        "From the timeline below and what happens in this clip, write ONE English sentence under 25 words that moves the story on: what someone is doing, what state they are in, or what just turned.",
+        "Never describe the filming. No \"shot\", \"camera\", \"frame\", \"cut\", \"close-up\", \"pan\", \"zoom\", \"the director\" — nothing about editing or broadcasting.",
+        "Only the people and events inside the story, as if telling a viewer what is happening. Do not repeat what the timeline already said.",
+        "Output that one sentence only — no quotes, no prefix.",
       ].join("\n"),
       [
-        timeline.length ? `故事时间线（按先后）：\n${timeline.map((line, index) => `${index + 1}. ${line}`).join("\n")}` : "这是故事的开场。",
+        timeline.length ? `Story so far, in order:\n${timeline.map((line, index) => `${index + 1}. ${line}`).join("\n")}` : "This is the opening of the story.",
         generation.channel === "director"
           ? [
-            "这一段是全局视角的赛况画面，用来交代当前整体局势。",
-            sourceSummary ? `刚刚播过的是：${sourceSummary}（不要复述它）` : `画面里是 ${who}。`,
-            "请从旁观全局的角度写这一句，交代局势往哪走、天气压力，或某个人接下来要面对什么。不要重复刚刚播过的内容。",
+            "This clip is the wide view of the game, establishing where things stand overall.",
+            sourceSummary ? `What just aired: ${sourceSummary} (do not restate it)` : `${who} is on screen.`,
+            "Write that sentence from the outside view: where the situation is heading, the pressure of the weather, or what someone is about to face. Do not repeat what just aired.",
           ].join("\n")
           : [
-            `这一段是 ${who} 的视角。`,
+            `This clip is ${who}'s point of view.`,
             authored
-              ? `${who} 这一步要做的是：${authored}`
-              : `${who} 正在自己推进求生计划，并撞上了新的麻烦。`,
-            "请写这一句，说明他这么做的处境或结果。",
+              ? `What ${who} is doing here: ${authored}`
+              : `${who} is pushing their own survival plan forward and running into new trouble.`,
+            "Write that sentence, giving the situation or the outcome of it.",
           ].join("\n"),
       ].join("\n\n"),
-      200,
+      400,
     );
   try {
     // The writer fails intermittently under load, and a dropped line leaves a hole in the timeline
     // that every later summary reads from. One retry is worth it.
     const written = await writeSummary().catch(() => writeSummary());
-    if (written) summary = cleanText(written, 120);
+    const line = cleanText(written, 260);
+    // A reply cut off mid-phrase reads as a glitch to the viewer; the template line is better.
+    if (line && (line.length > 24 || /[.!?]$/.test(line))) summary = line;
   } catch {
     // Keep the template line.
   }
@@ -1527,7 +1538,7 @@ async function summarizeClip(generation: typeof generations.$inferSelect) {
     participant_id: generation.channel_participant_id,
     round: generation.round,
     kind: "world",
-    title: generation.channel === "director" ? "赛况" : `${who} 的视角`,
+    title: generation.channel === "director" ? "Standings" : `${who} POV`,
     detail: summary,
   });
   return summary;
@@ -1605,8 +1616,8 @@ interface GenerationTier {
 const GENERATION_TIERS: Record<GenerationTierKey, GenerationTier> = {
   live: {
     key: "live",
-    label: "直播档",
-    detail: "角色线 3 段并行，导播线 2 段并行，出片约每分钟 10 段。",
+    label: "Live",
+    detail: "3 contestant clips and 2 director cuts in flight, about 10 clips a minute.",
     concurrent: 5,
     directorSlots: 2,
     houseSlots: 3,
@@ -1615,8 +1626,8 @@ const GENERATION_TIERS: Record<GenerationTierKey, GenerationTier> = {
   },
   idle: {
     key: "idle",
-    label: "低耗档",
-    detail: "一次只渲染 1 段，每分钟开一段。没什么人看的时候用这档。",
+    label: "Low",
+    detail: "One clip at a time, one a minute. Use this when hardly anyone is watching.",
     concurrent: 1,
     directorSlots: 1,
     houseSlots: 1,
@@ -1625,8 +1636,8 @@ const GENERATION_TIERS: Record<GenerationTierKey, GenerationTier> = {
   },
   hourly: {
     key: "hourly",
-    label: "休眠档",
-    detail: "一次只渲染 1 段，每小时开一段。几乎不产生费用，直播基本静止。",
+    label: "Idle",
+    detail: "One clip at a time, one an hour. Costs almost nothing; the broadcast barely moves.",
     concurrent: 1,
     directorSlots: 1,
     houseSlots: 1,
@@ -1661,26 +1672,26 @@ const CHAT_UNLOCKS = [
   {
     key: "follow_x",
     grant: 2,
-    title: "关注 Renoise 的 X 账号",
-    detail: "点下面的按钮去关注，马上多 2 次发言机会。",
+    title: "Follow Renoise on X",
+    detail: "Follow with the button below and 2 more messages are yours right away.",
     url: "https://x.com/renoiseai",
-    cta: "前往关注",
+    cta: "Follow",
   },
   {
     key: "follow_x_jp",
     grant: 4,
-    title: "关注 Renoise Jp 的 X 账号",
-    detail: "日本官方账号，去关注一下，再多 4 次发言机会。",
+    title: "Follow Renoise Jp on X",
+    detail: "The Japanese account — follow it for 4 more messages.",
     url: "https://x.com/renoiseaijp",
-    cta: "前往关注",
+    cta: "Follow",
   },
   {
     key: "register",
     grant: 5,
-    title: "注册 Renoise 账号",
-    detail: "去注册一个 Renoise 账号，最后再多 5 次发言机会。",
+    title: "Create a Renoise account",
+    detail: "Sign up at Renoise for a final 5 messages.",
     url: "https://renoise.ai/?utm_medium=renoiselive&utm_source=tomato-renoise-live",
-    cta: "前往注册",
+    cta: "Sign up",
   },
 ];
 
@@ -1724,7 +1735,7 @@ const CHAT_COOLDOWN_SECONDS = 4;
 
 // A handle, not the address: chat is public and an email is not.
 function chatHandle(email: string) {
-  const name = email.split("@")[0] || "观众";
+  const name = email.split("@")[0] || "viewer";
   return name.length > 14 ? `${name.slice(0, 14)}…` : name;
 }
 
@@ -1861,13 +1872,13 @@ async function maybeStartDirectorClip(match: typeof matches.$inferSelect) {
 
 async function syncLiveGeneration(id: number) {
   if (!Number.isInteger(id)) {
-    const error = new Error("生成任务编号无效");
+    const error = new Error("Invalid generation id");
     error.name = "BadRequestError";
     throw error;
   }
   const [generation] = await db.select().from(generations).where(eq(generations.id, id)).limit(1);
   if (!generation) {
-    const error = new Error("生成任务不存在");
+    const error = new Error("No such generation");
     error.name = "NotFoundError";
     throw error;
   }
@@ -1876,10 +1887,10 @@ async function syncLiveGeneration(id: number) {
       if (generation.model === LIVE_VIDEO_MODEL) {
         const videoTask = await getMiniMaxVideoTask(generation.video_task_id);
         const status = miniMaxVideoStatus(videoTask);
-        if (status === "failed" || status === "cancelled") throw new Error("MiniMax H3 Max 视频生成失败");
+        if (status === "failed" || status === "cancelled") throw new Error("MiniMax H3 Max video generation failed");
         if (status !== "succeeded") return { generation, providerStatus: status || "pending" };
         const remoteUrl = miniMaxVideoResultUrl(videoTask);
-        if (!remoteUrl) throw new Error("MiniMax 视频任务完成但没有可用结果地址");
+        if (!remoteUrl) throw new Error("MiniMax finished the video but returned no result URL");
         const stableUrl = await persistVideoResult(generation.id, remoteUrl);
         const completed = { ...generation, stage: "completed" as const, result_url: stableUrl };
         // Several viewers poll this endpoint at once. Only the request that actually flips the row
@@ -1899,10 +1910,10 @@ async function syncLiveGeneration(id: number) {
       }
       const videoTask = await getRenoiseTask(generation.video_task_id);
       const status = taskStatus(videoTask);
-      if (status === "failed") throw new Error("H3 Max 视频生成失败");
+      if (status === "failed") throw new Error("H3 Max video generation failed");
       if (status !== "completed") return { generation, providerStatus: status || "pending" };
       const remoteUrl = taskResultUrl(videoTask);
-      if (!remoteUrl) throw new Error("视频任务完成但没有可用结果地址");
+      if (!remoteUrl) throw new Error("The video finished but returned no result URL");
       const stableUrl = await persistVideoResult(generation.id, remoteUrl);
       await db.update(generations).set({ stage: "completed", result_url: stableUrl, completed_at: new Date().toISOString() })
         .where(eq(generations.id, generation.id));
@@ -1926,12 +1937,12 @@ async function syncLiveGeneration(id: number) {
       // Claimed but never submitted: the request that claimed it died. Do not strand it forever.
       const createdAt = Date.parse(`${generation.created_at.replace(" ", "T")}Z`);
       if (Number.isFinite(createdAt) && Date.now() - createdAt > 180_000) {
-        throw new Error("分镜编写中断，未能提交生成任务");
+        throw new Error("Shot writing was interrupted; the job was never submitted");
       }
     }
     return { generation, providerStatus: generation.stage };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "生成同步失败";
+    const message = error instanceof Error ? error.message : "Sync failed";
     await db.update(generations).set({ stage: "failed", error_message: message }).where(eq(generations.id, generation.id));
     return { error: message, generation: { ...generation, stage: "failed" }, failed: true };
   }
@@ -1940,21 +1951,21 @@ async function syncLiveGeneration(id: number) {
 function liveGenerationErrorStatus(error: unknown) {
   const name = error instanceof Error ? error.name : "";
   const message = error instanceof Error ? error.message : "";
-  if (name === "BadRequestError" || message.startsWith("请选择")) return 400;
+  if (name === "BadRequestError" || message.startsWith("Pick ")) return 400;
   if (name === "ConflictError") return 409;
   if (name === "NotFoundError") return 404;
   if (message.includes("MINIMAX_API_KEY")) return 503;
-  if (message.includes("当前没有可用") || message.includes("需要启用")) return 503;
+  if (message.includes("not currently offer") || message.includes("must be enabled")) return 503;
   return 502;
 }
 
 const app = new Hono()
   .get("/api/public/health", (c) => c.json({ ok: true, service: "tomato-live" }))
   .post("/api/public/chat", async (c) => {
-    if (!auth.user) return c.json({ error: "请先登录后再发言" }, 401);
+    if (!auth.user) return c.json({ error: "Sign in to chat" }, 401);
     const data = asObject(await c.req.json().catch(() => ({})));
     const body = cleanText(data.body, CHAT_MAX_CHARS);
-    if (body.length < 2) return c.json({ error: "说点什么再发送" }, 400);
+    if (body.length < 2) return c.json({ error: "Write something first" }, 400);
     const match = await ensureLiveMatch();
 
     const [recent] = await db.select({ n: sql<number>`count(*)` }).from(chatMessages).where(and(
@@ -1962,12 +1973,12 @@ const app = new Hono()
       eq(chatMessages.user_id, auth.user.id),
       sql`${chatMessages.created_at} >= datetime('now', ${`-${CHAT_COOLDOWN_SECONDS} seconds`})`,
     ));
-    if (Number(recent?.n ?? 0) > 0) return c.json({ error: "发得太快了，缓一缓再说" }, 429);
+    if (Number(recent?.n ?? 0) > 0) return c.json({ error: "Slow down a moment" }, 429);
 
     const allowance = await chatAllowanceState(match.id);
     if (allowance && !allowance.unlimited && allowance.remaining <= 0) {
       return c.json({
-        error: allowance.next ? "发言次数用完了" : "发言次数已经全部用完了",
+        error: allowance.next ? "You are out of messages" : "You have used every message",
         allowance,
       }, 403);
     }
@@ -1989,7 +2000,7 @@ const app = new Hono()
     return c.json({ message: chatPayload(row), mentions, allowance: await chatAllowanceState(match.id) }, 201);
   })
   .post("/api/public/chat/unlock", async (c) => {
-    if (!auth.user) return c.json({ error: "请先登录" }, 401);
+    if (!auth.user) return c.json({ error: "Sign in first" }, 401);
     const data = asObject(await c.req.json().catch(() => ({})));
     const step = cleanText(data.step, 24);
     const match = await ensureLiveMatch();
@@ -1997,7 +2008,7 @@ const app = new Hono()
     const pending = nextUnlock(tier);
     // Only the step actually on offer can be claimed, so a replayed call cannot skip a rung.
     if (!pending || pending.key !== step) {
-      return c.json({ error: "这个解锁已经完成了", allowance: await chatAllowanceState(match.id) }, 409);
+      return c.json({ error: "That unlock is already claimed", allowance: await chatAllowanceState(match.id) }, 409);
     }
     await db.insert(viewerPerks)
       .values({ user_id: auth.user.id, tier: tier + 1 })
@@ -2008,7 +2019,7 @@ const app = new Hono()
     return c.json({ allowance: await chatAllowanceState(match.id) });
   })
   .get("/api/admin/generation-tier", async (c) => {
-    if (!isHostAccount()) return c.json({ error: "当前账号没有导演权限" }, 403);
+    if (!isHostAccount()) return c.json({ error: "This account has no host permission" }, 403);
     const match = await ensureLiveMatch();
     const [houseTally] = await db.select({ n: sql<number>`count(*)` }).from(generations)
       .where(and(eq(generations.match_id, match.id), sql`${generations.created_by} like 'house:%'`));
@@ -2064,14 +2075,14 @@ const app = new Hono()
     });
   })
   .post("/api/admin/generation-tier", async (c) => {
-    if (!isHostAccount()) return c.json({ error: "当前账号没有导演权限" }, 403);
+    if (!isHostAccount()) return c.json({ error: "This account has no host permission" }, 403);
     const data = asObject(await c.req.json().catch(() => ({})));
     const key = cleanText(data.tier, 16) as GenerationTierKey;
-    if (!GENERATION_TIERS[key]) return c.json({ error: "未知的生成档位" }, 400);
+    if (!GENERATION_TIERS[key]) return c.json({ error: "Unknown generation tier" }, 400);
     const match = await ensureLiveMatch();
     await db.update(matches).set({ generation_tier: key }).where(eq(matches.id, match.id));
     // Clips already rendering are paid for; the new tier applies to what gets queued next.
-    return c.json({ current: key, message: `已切换到${GENERATION_TIERS[key].label}，正在渲染的片段会先跑完` });
+    return c.json({ current: key, message: `Switched to ${GENERATION_TIERS[key].label}; clips already rendering will finish first` });
   })
   .get("/api/public/live", async (c) => {
     const match = await ensureLiveMatch();
@@ -2104,7 +2115,7 @@ const app = new Hono()
       control_token_hash: undefined,
     })));
     // Chat keeps a longer memory than the clip window does, so a line filmed a while back would
-    // point at a clip the page no longer has and its "看这一段" would go nowhere. Pull those back in.
+    // point at a clip the page no longer has and its "Watch it" button would go nowhere. Pull those back in.
     const chat = await db.select().from(chatMessages)
       .where(eq(chatMessages.match_id, match.id))
       .orderBy(desc(chatMessages.id))
@@ -2168,12 +2179,12 @@ const app = new Hono()
   })
   .get("/api/public/clips/:id/video", async (c) => {
     const id = Number(c.req.param("id"));
-    if (!Number.isInteger(id) || id <= 0) return c.json({ error: "无效的片段 ID" }, 400);
+    if (!Number.isInteger(id) || id <= 0) return c.json({ error: "Invalid clip id" }, 400);
     const [clip] = await db.select({ stage: generations.stage, result_url: generations.result_url })
       .from(generations).where(eq(generations.id, id)).limit(1);
-    if (!clip || clip.stage !== "completed" || !clip.result_url) return c.json({ error: "片段不存在" }, 404);
+    if (!clip || clip.stage !== "completed" || !clip.result_url) return c.json({ error: "No such clip" }, 404);
     const signed = await clipUrl(clip.result_url);
-    if (!signed) return c.json({ error: "片段地址暂不可用" }, 404);
+    if (!signed) return c.json({ error: "Clip address unavailable" }, 404);
     // Proxied rather than redirected: a presigned URL changes on every request, so a redirect would
     // hand the browser a new cache key each time and re-download the whole clip.
     const forwarded = new Headers();
@@ -2182,7 +2193,7 @@ const app = new Hono()
     if (range) forwarded.set("range", range);
     if (ifNoneMatch) forwarded.set("if-none-match", ifNoneMatch);
     const upstream = await fetch(signed, { headers: forwarded });
-    if (upstream.status >= 400) return c.json({ error: "片段读取失败" }, 502);
+    if (upstream.status >= 400) return c.json({ error: "Could not read the clip" }, 502);
     const headers = new Headers();
     for (const key of ["content-type", "content-length", "content-range", "etag", "last-modified"]) {
       const value = upstream.headers.get(key);
@@ -2196,14 +2207,14 @@ const app = new Hono()
   })
   .get("/api/public/clips/:id/thumbnail", async (c) => {
     const id = Number(c.req.param("id"));
-    if (!Number.isInteger(id) || id <= 0) return c.json({ error: "无效的片段 ID" }, 400);
+    if (!Number.isInteger(id) || id <= 0) return c.json({ error: "Invalid clip id" }, 400);
     const [clip] = await db.select({ thumbnail_url: generations.thumbnail_url }).from(generations)
       .where(eq(generations.id, id)).limit(1);
-    if (!clip?.thumbnail_url) return c.json({ error: "该片段还没有缩略图" }, 404);
+    if (!clip?.thumbnail_url) return c.json({ error: "That clip has no thumbnail yet" }, 404);
     const signed = await clipUrl(clip.thumbnail_url);
-    if (!signed) return c.json({ error: "缩略图地址暂不可用" }, 404);
+    if (!signed) return c.json({ error: "Thumbnail address unavailable" }, 404);
     const upstream = await fetch(signed);
-    if (upstream.status >= 400) return c.json({ error: "缩略图读取失败" }, 502);
+    if (upstream.status >= 400) return c.json({ error: "Could not read the thumbnail" }, 502);
     const headers = new Headers();
     headers.set("content-type", upstream.headers.get("content-type") || "image/jpeg");
     const length = upstream.headers.get("content-length");
@@ -2213,16 +2224,16 @@ const app = new Hono()
   })
   .post("/api/public/clips/:id/tail-frame", async (c) => {
     const id = Number(c.req.param("id"));
-    if (!Number.isInteger(id) || id <= 0) return c.json({ error: "无效的片段 ID" }, 400);
+    if (!Number.isInteger(id) || id <= 0) return c.json({ error: "Invalid clip id" }, 400);
     const [clip] = await db.select().from(generations).where(eq(generations.id, id)).limit(1);
-    if (!clip || clip.stage !== "completed" || !clip.result_url) return c.json({ error: "片段不存在" }, 404);
+    if (!clip || clip.stage !== "completed" || !clip.result_url) return c.json({ error: "No such clip" }, 404);
     // First frame wins. Re-uploads are a no-op so a second viewer racing the first changes nothing.
     if (clip.thumbnail_url) return c.json({ ok: true, skipped: true });
     const contentType = c.req.header("content-type") || "";
-    if (!contentType.startsWith("image/")) return c.json({ error: "尾帧必须是图片" }, 400);
+    if (!contentType.startsWith("image/")) return c.json({ error: "The tail frame must be an image" }, 400);
     const bytes = await c.req.arrayBuffer();
     if (bytes.byteLength < 1024 || bytes.byteLength > TAIL_FRAME_MAX_BYTES) {
-      return c.json({ error: "尾帧体积不合法" }, 400);
+      return c.json({ error: "Invalid tail frame size" }, 400);
     }
     const s3Uri = await persistTailFrame(id, { bytes, contentType });
     const claimed = await db.update(generations)
@@ -2240,7 +2251,7 @@ const app = new Hono()
     const filename = cleanText(data.filename, 120).replace(/[^a-zA-Z0-9._-]/g, "-");
     const contentType = cleanText(data.contentType, 80).toLowerCase();
     if (!filename || !["image/jpeg", "image/png", "image/webp"].includes(contentType)) {
-      return c.json({ error: "仅支持 JPG、PNG 或 WebP 角色照片" }, 400);
+      return c.json({ error: "Only JPG, PNG or WebP photos are supported" }, 400);
     }
     const path = `avatars/${crypto.randomUUID()}-${filename}`;
     const signed = await storage.from(buckets.characterAvatars).createPresignedPutUrl(path, 900, { contentType });
@@ -2257,19 +2268,19 @@ const app = new Hono()
       notice: !CHARACTER_CREATION_OPEN
         ? CHARACTER_CREATION_CLOSED_NOTICE
         : secret.get("MINIMAX_API_KEY")
-          ? "当前将通过 MiniMax 官方 API 生成 1 张角色定妆图。"
-          : "MiniMax API Key 尚未配置，暂时不能生成角色。",
+          ? "One character sheet will be generated through the MiniMax API."
+          : "The MiniMax API key is not configured, so characters cannot be generated.",
     });
   })
   .post("/api/public/character/generations", async (c) => {
     if (!CHARACTER_CREATION_OPEN) return c.json({ error: CHARACTER_CREATION_CLOSED_NOTICE }, 503);
     // Characters belong to accounts now: it is what makes them recoverable and what the per-user
     // limit is counted against.
-    if (!auth.user) return c.json({ error: "请先登录后再创建角色" }, 401);
+    if (!auth.user) return c.json({ error: "Sign in to create a character" }, 401);
     const quotaMatch = await ensureLiveMatch();
     const quota = await characterQuota(quotaMatch.id);
     if (quota.remaining <= 0) {
-      return c.json({ error: `每个账号最多创建 ${quota.limit} 个角色，你已经创建了 ${quota.used} 个` }, 403);
+      return c.json({ error: `Each account may create ${quota.limit} character(s); you have created ${quota.used}` }, 403);
     }
     const data = asObject(await c.req.json().catch(() => ({})));
     const displayName = cleanText(data.displayName, 20);
@@ -2284,19 +2295,19 @@ const app = new Hono()
       ? requestedAccent
       : freeAccents[0] ?? ACCENTS[Math.floor(Math.random() * ACCENTS.length)];
     const avatarPath = cleanText(data.avatarPath, 240);
-    if (displayName.length < 2) return c.json({ error: "参赛名至少需要 2 个字符" }, 400);
-    if (concept.length < 4) return c.json({ error: "请描述一下你想成为什么样的角色，至少 4 个字" }, 400);
-    if (!avatarPath || !avatarPath.startsWith("avatars/")) return c.json({ error: "请先上传一张有效的本人照片" }, 400);
-    if (data.creditApproved !== true) return c.json({ error: "请先确认本次角色生成将调用 MiniMax 官方 API" }, 400);
+    if (displayName.length < 2) return c.json({ error: "The contestant name needs at least 2 characters" }, 400);
+    if (concept.length < 4) return c.json({ error: "Describe the contestant you want to be, at least 4 characters" }, 400);
+    if (!avatarPath || !avatarPath.startsWith("avatars/")) return c.json({ error: "Upload a valid photo of yourself first" }, 400);
+    if (data.creditApproved !== true) return c.json({ error: "Confirm that this will call the MiniMax API" }, 400);
     try {
       requireMiniMax();
     } catch {
-      return c.json({ error: "MiniMax API Key 尚未配置，暂时无法创建角色" }, 503);
+      return c.json({ error: "The MiniMax API key is not configured, so characters cannot be created" }, 503);
     }
 
     const meta = await storage.from(buckets.characterAvatars).head(avatarPath);
-    if (!meta) return c.json({ error: "本人照片尚未上传完成" }, 400);
-    if (meta.size > 8 * 1024 * 1024) return c.json({ error: "本人照片不能超过 8MB" }, 400);
+    if (!meta) return c.json({ error: "The photo upload has not finished" }, 400);
+    if (meta.size > 8 * 1024 * 1024) return c.json({ error: "Your photo must be under 8MB" }, 400);
 
     const requesterHash = await sha256(requestFingerprint(c));
     const recent = await db.select({ id: characterDrafts.id }).from(characterDrafts).where(and(
@@ -2305,7 +2316,7 @@ const app = new Hono()
       sql`${characterDrafts.created_at} >= datetime('now', '-1 hour')`,
     ));
     if (recent.length >= CHARACTER_RATE_LIMIT_PER_HOUR) {
-      return c.json({ error: "这个网络一小时内最多创建 3 个角色，请稍后再试" }, 429);
+      return c.json({ error: "This network may create 3 characters an hour — try again later" }, 429);
     }
 
     const publicId = crypto.randomUUID();
@@ -2330,10 +2341,10 @@ const app = new Hono()
 
     try {
       const sourceUrl = await avatarUrl(storage.createS3Uri(buckets.characterAvatars, avatarPath));
-      if (!sourceUrl) throw new Error("无法生成本人照片的临时访问地址");
+      if (!sourceUrl) throw new Error("Could not sign a temporary URL for the photo");
       const imageTask = await createMiniMaxCharacterImage(prompt, sourceUrl);
       const imageResponse = await fetch(imageTask.url);
-      if (!imageResponse.ok) throw new Error("无法下载 MiniMax 生成的角色定妆图");
+      if (!imageResponse.ok) throw new Error("Could not download the generated character sheet");
       const imageBytes = await imageResponse.arrayBuffer();
       const contentType = imageResponse.headers.get("content-type") || "image/png";
       const outputPath = `generated/${draft.public_id}.png`;
@@ -2362,10 +2373,10 @@ const app = new Hono()
       return c.json({
         draft: await characterDraftPayload(readyDraft),
         controlToken,
-        message: "角色定妆图已由 MiniMax 官方 API 生成",
+        message: "The character sheet was generated through the MiniMax API",
       }, 201);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "角色生成任务提交失败";
+      const message = error instanceof Error ? error.message : "Could not submit the character job";
       await db.update(characterDrafts).set({ status: "failed", error_message: message }).where(eq(characterDrafts.id, draft.id));
       return c.json({ error: message }, 502);
     }
@@ -2375,21 +2386,21 @@ const app = new Hono()
     const data = asObject(await c.req.json().catch(() => ({})));
     const controlToken = cleanText(data.controlToken, 100);
     const draft = await getOwnedCharacterDraft(publicId, controlToken);
-    if (!draft) return c.json({ error: "无法访问这个角色草稿" }, 403);
+    if (!draft) return c.json({ error: "Cannot access this character draft" }, 403);
     if (draft.status !== "generating") return c.json({ draft: await characterDraftPayload(draft) });
     if (!draft.renoise_task_id) return c.json({ draft: await characterDraftPayload(draft), providerStatus: "pending" });
 
     try {
       const imageTask = await getRenoiseTask(draft.renoise_task_id);
       const status = taskStatus(imageTask);
-      if (status === "failed") throw new Error("角色定妆图生成失败");
+      if (status === "failed") throw new Error("Character sheet generation failed");
       if (status !== "completed") {
         return c.json({ draft: await characterDraftPayload(draft), providerStatus: status || "pending" });
       }
       const remoteUrl = taskResultUrl(imageTask);
-      if (!remoteUrl) throw new Error("角色任务已完成，但没有可用的定妆图");
+      if (!remoteUrl) throw new Error("The character job finished but returned no sheet");
       const imageResponse = await fetch(remoteUrl);
-      if (!imageResponse.ok) throw new Error("无法下载生成的角色定妆图");
+      if (!imageResponse.ok) throw new Error("Could not download the generated character sheet");
       const imageBytes = await imageResponse.arrayBuffer();
       const contentType = imageResponse.headers.get("content-type") || "image/png";
       const outputPath = `generated/${draft.public_id}.png`;
@@ -2422,26 +2433,26 @@ const app = new Hono()
       }).where(eq(characterDrafts.id, draft.id));
       return c.json({ draft: await characterDraftPayload(readyDraft), providerStatus: "completed" });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "角色生成同步失败";
+      const message = error instanceof Error ? error.message : "Character sync failed";
       await db.update(characterDrafts).set({ status: "failed", error_message: message }).where(eq(characterDrafts.id, draft.id));
       return c.json({ error: message, draft: await characterDraftPayload({ ...draft, status: "failed", error_message: message }) }, 502);
     }
   })
   .post("/api/public/join", async (c) => {
-    if (!auth.user) return c.json({ error: "请先登录后再让角色入场" }, 401);
+    if (!auth.user) return c.json({ error: "Sign in to enter your contestant" }, 401);
     const data = asObject(await c.req.json().catch(() => ({})));
     const characterPublicId = cleanText(data.characterPublicId, 64);
     const characterToken = cleanText(data.characterToken, 100);
     const draft = await getOwnedCharacterDraft(characterPublicId, characterToken);
-    if (!draft) return c.json({ error: "无法确认这个角色草稿" }, 403);
-    if (draft.status === "claimed") return c.json({ error: "这个角色已经参赛" }, 409);
+    if (!draft) return c.json({ error: "Cannot confirm this character draft" }, 403);
+    if (draft.status === "claimed") return c.json({ error: "This contestant has already entered" }, 409);
     if (draft.status !== "ready" || !draft.generated_s3_uri) {
-      return c.json({ error: "请等待角色定妆图生成完成" }, 409);
+      return c.json({ error: "Wait for the character sheet to finish" }, 409);
     }
     const match = await ensureLiveMatch();
     const quota = await characterQuota(match.id);
     if (quota.remaining <= 0) {
-      return c.json({ error: `每个账号最多参赛 ${quota.limit} 个角色，你已经有 ${quota.used} 个在场上` }, 403);
+      return c.json({ error: `Each account may field ${quota.limit} contestant(s); you already have ${quota.used}` }, 403);
     }
     const controlToken = crypto.randomUUID();
     const [participant] = await db.insert(participants).values({
@@ -2461,7 +2472,7 @@ const app = new Hono()
       stamina: 86,
       hunger: 18,
       score: 100,
-      last_action: "正在前往入场点",
+      last_action: "Heading to the entry point",
     }).returning();
     await db.update(characterDrafts).set({ status: "claimed", claimed_at: new Date().toISOString() })
       .where(eq(characterDrafts.id, draft.id));
@@ -2470,10 +2481,10 @@ const app = new Hono()
       participant_id: participant.id,
       round: match.current_round,
       kind: "system",
-      title: `${draft.display_name} 已进入候场区`,
-      detail: `${draft.archetype}将在下一段安全镜头中加入比赛。`,
+      title: `${draft.display_name} is in the holding area`,
+      detail: `${draft.archetype} joins the game in the next safe shot.`,
     });
-    return c.json({ participantId: participant.id, controlToken, message: "定妆角色已进入候场区" }, 201);
+    return c.json({ participantId: participant.id, controlToken, message: "Your contestant is in the holding area" }, 201);
   })
   .get("/api/public/my-characters", async (c) => {
     const match = await ensureLiveMatch();
@@ -2497,19 +2508,19 @@ const app = new Hono()
     // The viewer writes the branch themselves now; the blueprints survive only as UI shortcuts.
     const viewerPrompt = cleanText(data.viewerPrompt ?? data.prompt, VIEWER_PROMPT_MAX_CHARS);
     if (!Number.isInteger(participantId) || viewerPrompt.length < 2) {
-      return c.json({ error: "请先写下你想让角色做什么" }, 400);
+      return c.json({ error: "Write what your contestant should do" }, 400);
     }
     const [participant] = await db.select().from(participants).where(eq(participants.id, participantId)).limit(1);
-    if (!participant) return c.json({ error: "无法控制这个角色" }, 403);
+    if (!participant) return c.json({ error: "You cannot control this contestant" }, 403);
     const ownsBySession = Boolean(auth.user && participant.user_id === auth.user.id);
     // Once a character belongs to an account, the account is the only way in. The browser token
     // stays valid only for characters that predate accounts and were never claimed — otherwise
     // signing out would leave control behind in localStorage.
     const ownsByToken = !participant.user_id
       && Boolean(controlToken && participant.control_token_hash === await sha256(controlToken));
-    if (!ownsBySession && !ownsByToken) return c.json({ error: "无法控制这个角色" }, 403);
-    if (!participant.character_draft_id) return c.json({ error: "只能控制用户上传的参赛角色" }, 403);
-    if (participant.status === "eliminated") return c.json({ error: "角色已经离场" }, 409);
+    if (!ownsBySession && !ownsByToken) return c.json({ error: "You cannot control this contestant" }, 403);
+    if (!participant.character_draft_id) return c.json({ error: "Only viewer-created contestants can be controlled" }, 403);
+    if (participant.status === "eliminated") return c.json({ error: "This contestant is out" }, 409);
     const match = await ensureLiveMatch();
 
     // Only this contestant's own channel has to be idle; other channels keep running in parallel.
@@ -2536,7 +2547,7 @@ const app = new Hono()
         && Boolean(linked.thumbnail_url)
         && linkedIds.includes(participant.id)
         && linked.channel_participant_id !== participant.id;
-      if (!usable) return c.json({ error: "这一段不能作为你的起始画面" }, 400);
+      if (!usable) return c.json({ error: "That clip cannot open your shot" }, 400);
       linkedSourceId = linked!.id;
       linkedCast = linked!.participant_ids;
     }
@@ -2554,8 +2565,8 @@ const app = new Hono()
         participant_id: guest.id,
         round: match.current_round,
         kind: "danger",
-        title: `${guest.display_name} 被拉进了画面`,
-        detail: `${participant.display_name} 把 ${guest.display_name} 写进了这一段。片段生成后，${guest.display_name} 可以在输入框里用 / 接着这一帧往下拍。`,
+        title: `${guest.display_name} was pulled into the shot`,
+        detail: `${participant.display_name} wrote ${guest.display_name} into this clip. Once it lands, ${guest.display_name} can type / to continue from that frame.`,
       });
     }
     await db.insert(matchEvents).values({
@@ -2563,10 +2574,10 @@ const app = new Hono()
       participant_id: participant.id,
       round: match.current_round,
       kind: "player",
-      title: `${participant.display_name} 的指令`,
+      title: `${participant.display_name} gave an order`,
       detail: guests.length
-        ? `${viewerPrompt} 已进入 ${participant.display_name} 的视角通道，联动 ${guests.map((item) => item.display_name).join("、")}。`
-        : `${viewerPrompt} 已进入 ${participant.display_name} 的视角通道。`,
+        ? `${viewerPrompt} — filming on the ${participant.display_name} channel with ${guests.map((item) => item.display_name).join(", ")}.`
+        : `${viewerPrompt} — filming on the ${participant.display_name} channel.`,
     });
     try {
       // Continuing from a linked clip means opening on a frame that already holds its whole cast.
@@ -2584,12 +2595,12 @@ const app = new Hono()
       }, `participant:${participant.id}`);
       return c.json({
         ok: true,
-        message: "指令已收到，正在编写分镜",
+        message: "Order received, writing the shot",
         guests: guests.map((item) => item.display_name),
         generation,
       }, 201);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "生成任务提交失败";
+      const message = error instanceof Error ? error.message : "Could not submit the job";
       return c.json({ error: message }, liveGenerationErrorStatus(error));
     }
   })
@@ -2599,7 +2610,7 @@ const app = new Hono()
       if (result.failed) return c.json(result, 502);
       return c.json(result);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "生成同步失败";
+      const message = error instanceof Error ? error.message : "Sync failed";
       return c.json({ error: message }, liveGenerationErrorStatus(error));
     }
   })
@@ -2632,13 +2643,13 @@ const app = new Hono()
     }
   })
   .post("/api/director/generations", async (c) => {
-    if (!isHostAccount()) return c.json({ error: "当前账号没有导演权限" }, 403);
+    if (!isHostAccount()) return c.json({ error: "This account has no host permission" }, 403);
     try {
       const data = asObject(await c.req.json().catch(() => ({})));
       const generation = await queueLiveGeneration(directorRequestFrom(data), auth.user!.id);
-      return c.json({ generation, message: "已排队，正在编写分镜" }, 201);
+      return c.json({ generation, message: "Queued, writing the shot" }, 201);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "生成任务提交失败";
+      const message = error instanceof Error ? error.message : "Could not submit the job";
       return c.json({ error: message }, liveGenerationErrorStatus(error));
     }
   })
@@ -2649,7 +2660,7 @@ const app = new Hono()
       if (result.failed) return c.json(result, 502);
       return c.json(result);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "生成同步失败";
+      const message = error instanceof Error ? error.message : "Sync failed";
       return c.json({ error: message }, liveGenerationErrorStatus(error));
     }
   });

@@ -15,7 +15,7 @@ const DIRECTOR_CHANNEL = "director";
 // Mirrors CHARACTER_CREATION_OPEN on the server; the endpoint refuses regardless, this just keeps
 // viewers out of a flow that would fail at the end.
 const CHARACTER_CREATION_OPEN = false;
-const CHARACTER_CREATION_CLOSED_NOTICE = "角色创建功能马上开放，敬请期待。";
+const CHARACTER_CREATION_CLOSED_NOTICE = "Character creation opens soon — hang tight.";
 
 function channelKeyFor(clip: BroadcastClip) {
   return clip.channel === "director" ? DIRECTOR_CHANNEL : `p:${clip.channel_participant_id}`;
@@ -73,7 +73,7 @@ function LoadingScreen() {
   return (
     <main className="loading-screen">
       <div className="loading-mark"><BrandMark className="brand-mark" /><span>Renoise Live</span></div>
-      <p>正在连接北岸直播信号</p>
+      <p>Acquiring the north shore feed</p>
       <div className="loading-line"><i /></div>
     </main>
   );
@@ -97,11 +97,11 @@ function App() {
     try {
       const response = await client.api.fetch("/api/public/live");
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "直播状态不可用");
+      if (!response.ok) throw new Error(result.error || "The live feed is unavailable");
       setLive(result);
       setError("");
     } catch (cause) {
-      if (!quiet) setError(cause instanceof Error ? cause.message : "直播状态不可用");
+      if (!quiet) setError(cause instanceof Error ? cause.message : "The live feed is unavailable");
     }
   }, []);
 
@@ -169,8 +169,8 @@ function App() {
     const directorCount = live.clips.filter((clip) => clip.channel === "director").length;
     const tabs: ChannelTab[] = [{
       key: DIRECTOR_CHANNEL,
-      label: "总导播",
-      detail: directorCount ? `${directorCount} 段串播` : "等待素材",
+      label: "Director",
+      detail: directorCount ? `${directorCount} cuts` : "Waiting on footage",
       pending: pending.some((item) => item.channel === "director"),
       pendingStage: pending.find((item) => item.channel === "director")?.stage,
       avatarUrl: "/director.png",
@@ -181,7 +181,7 @@ function App() {
       tabs.push({
         key: `p:${participant.id}`,
         label: participant.display_name,
-        detail: count ? `${count} 段视角` : "尚无片段",
+        detail: count ? `${count} clips` : "No footage yet",
         pending: pending.some((item) => item.channel_participant_id === participant.id),
         pendingStage: pending.find((item) => item.channel_participant_id === participant.id)?.stage,
         avatarUrl: participant.portrait_url ?? participant.avatar_url,
@@ -208,7 +208,7 @@ function App() {
     }
     return [...newestByAuthor.entries()].map(([author, clip]) => ({
       id: clip.id,
-      fromName: live.participants.find((item) => item.id === author)?.display_name ?? "其他选手",
+      fromName: live.participants.find((item) => item.id === author)?.display_name ?? "another contestant",
       summary: clip.summary,
     }));
   }, [control?.participantId, live]);
@@ -305,9 +305,9 @@ function App() {
     return (
       <main className="fatal-screen">
         <span>NO SIGNAL</span>
-        <h1>直播信号中断</h1>
+        <h1>Feed lost</h1>
         <p>{error}</p>
-        <button onClick={() => refresh()}>重新连接</button>
+        <button onClick={() => refresh()}>Reconnect</button>
       </main>
     );
   }
@@ -326,8 +326,8 @@ function App() {
         <div className="topbar-actions">
           <span className="viewer-count"><i /> {live.match.viewers.toLocaleString()} WATCHING</span>
           {/* Manual cuts are a host tool: the director channel advances on its own. */}
-          {isHost ? <button className="text-action" onClick={openDirector}>生成下一段</button> : null}
-          <button className="join-action" onClick={openJoin}>{myParticipant ? "角色档案" : "加入挑战"}<span>↗</span></button>
+          {isHost ? <button className="text-action" onClick={openDirector}>Cut next</button> : null}
+          <button className="join-action" onClick={openJoin}>{myParticipant ? "My contestant" : "Join"}<span>↗</span></button>
         </div>
       </header>
 
@@ -353,7 +353,7 @@ function App() {
             // A chat line's clip lives on whichever channel filmed it, so switch there first.
             const clip = live.clips.find((item) => item.id === generationId);
             if (!clip) {
-              setToast("这一段还没进直播队列");
+              setToast("That clip is not in the broadcast queue yet");
               return;
             }
             setActiveChannel(channelKeyFor(clip));
@@ -381,7 +381,7 @@ function App() {
       <footer>
         <span>© 2026 RENOISE LIVE / POWERED BY EDGESPARK + MINIMAX</span>
         <div>
-          {isAuthenticated && <button onClick={() => void handleSignOut()}>{user?.email} · 退出</button>}
+          {isAuthenticated && <button onClick={() => void handleSignOut()}>{user?.email} · Sign out</button>}
           <span>LIVE LATENCY 12.4S</span>
           <span>GENERATION BUFFER 01</span>
         </div>

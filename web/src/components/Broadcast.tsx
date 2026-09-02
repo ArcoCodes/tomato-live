@@ -69,8 +69,8 @@ function GenerationProgress({ stage }: { stage: "queued" | "keyframe" | "video" 
         />
       </div>
       <div className="gen-progress-copy">
-        <strong>{writing ? "正在锁定信号" : "画面回传中"}</strong>
-        <span>{writing ? "岛上的机位还在对准，马上就有画面" : "岛上画面正在传回，约 20 秒"}</span>
+        <strong>{writing ? "Acquiring signal" : "Feed incoming"}</strong>
+        <span>{writing ? "The cameras on the island are still lining up" : "Footage is coming back from the island, about 20s"}</span>
       </div>
     </div>
   );
@@ -464,8 +464,8 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
   const showPlaceholder = !clip?.result_url || !placeholderGone;
 
   return (
-    <section className="broadcast" aria-label="生存挑战直播">
-      <div className="channel-bar" role="tablist" aria-label="直播通道">
+    <section className="broadcast" aria-label="Survival broadcast">
+      <div className="channel-bar" role="tablist" aria-label="Channels">
         {channels.map((item) => (
           <button
             key={item.key}
@@ -479,7 +479,7 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
             </span>
             <span className="channel-copy">
               <strong>{item.label}</strong>
-              <small className={item.pending ? "is-pending" : ""}>{item.pending ? (item.pendingStage === "video" ? "画面回传中…" : "正在锁定信号…") : item.detail}</small>
+              <small className={item.pending ? "is-pending" : ""}>{item.pending ? (item.pendingStage === "video" ? "Feed incoming…" : "Acquiring signal…") : item.detail}</small>
             </span>
           </button>
         ))}
@@ -497,7 +497,7 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
             <div
               className={`generated-scene${clip?.result_url ? " is-cover" : ""}${firstFrameShown ? " is-dimmed" : ""}`}
               role="img"
-              aria-label="风暴前的荒岛雨林直播模拟画面"
+              aria-label="Simulated island rainforest feed before the storm"
             >
               <div className="moon" />
               <div className="ridge ridge-back" />
@@ -514,7 +514,7 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
           {/* The timeline summary doubles as a caption, so the show reads even with the sound off. */}
           {clip?.summary && firstFrameShown ? (
             <div className="broadcast-subtitle">
-              <span>{activeChannel === "director" ? "现场解说" : "画面记录"}</span>
+              <span>{activeChannel === "director" ? "LIVE COMMENTARY" : "FIELD LOG"}</span>
               <p>{clip.summary}</p>
             </div>
           ) : null}
@@ -522,8 +522,8 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
             <button
               type="button"
               className={muted ? "sound-toggle" : "sound-toggle is-live"}
-              aria-label={muted ? "开启声音" : "静音"}
-              title={muted ? "开启声音" : "静音"}
+              aria-label={muted ? "Unmute" : "Mute"}
+              title={muted ? "Unmute" : "Mute"}
               onClick={() => {
                 if (!muted) {
                   setSoundOn(false);
@@ -546,14 +546,14 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
         </div>
       </div>
 
-      <div className="clip-history" aria-label="历史片段">
+      <div className="clip-history" aria-label="Clip archive">
         {archiveNav.left ? (
-          <button type="button" className="clip-nav is-left" aria-label="更早的片段" onClick={() => pageArchive(-1)}>
+          <button type="button" className="clip-nav is-left" aria-label="Earlier clips" onClick={() => pageArchive(-1)}>
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M15 5l-7 7 7 7" /></svg>
           </button>
         ) : null}
         {archiveNav.right ? (
-          <button type="button" className="clip-nav is-right" aria-label="更多片段" onClick={() => pageArchive(1)}>
+          <button type="button" className="clip-nav is-right" aria-label="Later clips" onClick={() => pageArchive(1)}>
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M9 5l7 7-7 7" /></svg>
           </button>
         ) : null}
@@ -589,7 +589,7 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
                 {item.thumbnail_url
                   ? <img src={item.thumbnail_url} alt="" loading="lazy" />
                   : <i />}
-                {item.id === latestClipId ? <em>最新</em> : null}
+                {item.id === latestClipId ? <em>NEW</em> : null}
               </span>
               <span className="clip-meta">
                 {/* Position within this channel, not the database id — ids never restart. */}
@@ -597,7 +597,7 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
                 <small>{item.duration_seconds}s</small>
               </span>
             </button>
-          )) : <p>生成第一段后，这里会出现可回看的历史视频。</p>}
+          )) : <p>Once the first clip is filmed, the archive shows up here.</p>}
         </div>
       </div>
     </section>

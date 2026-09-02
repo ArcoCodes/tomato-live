@@ -3,10 +3,10 @@ import { createPortal } from "react-dom";
 import type { Participant } from "@/types/live";
 
 const statusLabel = {
-  ready: "候场",
-  alive: "存活",
-  danger: "危险",
-  eliminated: "离场",
+  ready: "Standby",
+  alive: "Alive",
+  danger: "In danger",
+  eliminated: "Out",
 };
 
 interface Hint {
@@ -23,11 +23,11 @@ export function Roster({ participants, selectedId }: { participants: Participant
   const [hint, setHint] = useState<Hint | null>(null);
 
   return (
-    <aside className="roster-panel" aria-label="当前参赛者">
+    <aside className="roster-panel" aria-label="Contestants">
       <div className="panel-heading">
         <div>
           <span className="eyebrow">CONTESTANTS</span>
-          <h2>参赛者</h2>
+          <h2>Contestants</h2>
         </div>
         <span className="alive-count">{alive} ALIVE</span>
       </div>

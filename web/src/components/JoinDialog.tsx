@@ -67,13 +67,13 @@ export function JoinDialog({ open, onClose, onJoined }: JoinDialogProps) {
       try {
         const response = await client.api.fetch("/api/public/character/cost");
         const result = await response.json();
-        if (!response.ok) throw new Error(result.error || "无法读取角色生成额度");
+        if (!response.ok) throw new Error(result.error || "Could not read the character quota");
         if (!cancelled) {
           setCost(result);
           setError("");
         }
       } catch (cause) {
-        if (!cancelled) setError(cause instanceof Error ? cause.message : "无法读取角色生成额度");
+        if (!cancelled) setError(cause instanceof Error ? cause.message : "Could not read the character quota");
       }
     }, 180);
     return () => {
@@ -97,7 +97,7 @@ export function JoinDialog({ open, onClose, onJoined }: JoinDialogProps) {
           body: JSON.stringify({ controlToken: control.controlToken }),
         });
         const result = await response.json();
-        if (!response.ok) throw new Error(result.error || "角色生成状态同步失败");
+        if (!response.ok) throw new Error(result.error || "Could not sync the character job");
         if (cancelled) return;
         setDraft(result.draft);
         setName(result.draft.displayName);
@@ -105,7 +105,7 @@ export function JoinDialog({ open, onClose, onJoined }: JoinDialogProps) {
         if (result.draft.status === "ready") setStage("ready");
         if (result.draft.status === "failed") {
           setStage("failed");
-          setError(result.draft.error || "角色生成失败");
+          setError(result.draft.error || "Character generation failed");
         }
         if (result.draft.status === "claimed") {
           localStorage.removeItem(DRAFT_STORAGE_KEY);
@@ -113,7 +113,7 @@ export function JoinDialog({ open, onClose, onJoined }: JoinDialogProps) {
           setStage("form");
         }
       } catch (cause) {
-        if (!cancelled) setError(cause instanceof Error ? cause.message : "角色生成状态同步失败");
+        if (!cancelled) setError(cause instanceof Error ? cause.message : "Could not sync the character job");
       } finally {
         running = false;
       }
@@ -132,7 +132,7 @@ export function JoinDialog({ open, onClose, onJoined }: JoinDialogProps) {
     event.preventDefault();
     if (!file || !cost || !creditApproved) return;
     if (file.size > 8 * 1024 * 1024) {
-      setError("本人照片不能超过 8MB");
+      setError("Your photo must be under 8MB");
       return;
     }
     setBusy(true);
@@ -144,13 +144,13 @@ export function JoinDialog({ open, onClose, onJoined }: JoinDialogProps) {
         body: JSON.stringify({ filename: file.name, contentType: file.type }),
       });
       const presign = await presignResponse.json();
-      if (!presignResponse.ok) throw new Error(presign.error || "无法准备本人照片上传");
+      if (!presignResponse.ok) throw new Error(presign.error || "Could not prepare the photo upload");
       const upload = await fetch(presign.uploadUrl, {
         method: "PUT",
         headers: { ...presign.requiredHeaders, "Content-Type": file.type },
         body: file,
       });
-      if (!upload.ok) throw new Error("本人照片上传失败");
+      if (!upload.ok) throw new Error("Photo upload failed");
 
       const response = await client.api.fetch("/api/public/character/generations", {
         method: "POST",
@@ -164,14 +164,14 @@ export function JoinDialog({ open, onClose, onJoined }: JoinDialogProps) {
         }),
       });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "角色定妆图生成失败");
+      if (!response.ok) throw new Error(result.error || "Character sheet generation failed");
       const control = { publicId: result.draft.publicId, controlToken: result.controlToken };
       localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(control));
       setDraft(result.draft);
       setDraftControl(control);
       setStage("generating");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "角色创建失败，请稍后重试");
+      setError(cause instanceof Error ? cause.message : "Character creation failed — try again shortly");
     } finally {
       setBusy(false);
     }
@@ -191,7 +191,7 @@ export function JoinDialog({ open, onClose, onJoined }: JoinDialogProps) {
         }),
       });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "报名失败");
+      if (!response.ok) throw new Error(result.error || "Could not enter");
       const control = { participantId: result.participantId, controlToken: result.controlToken };
       localStorage.removeItem(DRAFT_STORAGE_KEY);
       // App owns the control list; writing here used to overwrite the previous character's token.
@@ -199,7 +199,7 @@ export function JoinDialog({ open, onClose, onJoined }: JoinDialogProps) {
       onClose();
     } catch (cause) {
       setStage("ready");
-      setError(cause instanceof Error ? cause.message : "报名失败，请稍后重试");
+      setError(cause instanceof Error ? cause.message : "Could not enter — try again shortly");
     }
   }
 
@@ -213,93 +213,93 @@ export function JoinDialog({ open, onClose, onJoined }: JoinDialogProps) {
     setStage("form");
   }
 
-  const title = stage === "form" ? "先生成你的参赛角色" : stage === "ready" || stage === "joining" ? "确认角色定妆" : "角色正在成形";
+  const title = stage === "form" ? "Create your contestant" : stage === "ready" || stage === "joining" ? "Confirm your character sheet" : "Your contestant is taking shape";
 
   return (
     <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <div className="join-dialog" ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="join-title">
-        <button className="modal-close" onClick={onClose} aria-label="关闭">×</button>
+        <button className="modal-close" onClick={onClose} aria-label="Close">×</button>
         <div className="dialog-index">IDENTITY FORGE / 01</div>
         <h2 id="join-title">{title}</h2>
 
         {stage === "form" ? (
           <>
-            <p className="dialog-intro">上传本人照片作为身份参考。MiniMax 官方 API 会先生成统一世界观的角色定妆图；只有你确认后的角色图会进入名单和 H3 Max 直播。</p>
+            <p className="dialog-intro">Upload a photo of yourself as the identity reference. MiniMax generates a character sheet in the show\u2019s world; only the sheet you confirm enters the roster and the broadcast.</p>
             <form onSubmit={generateCharacter}>
-              <div className="identity-flow" aria-label="角色创建流程">
-                <span className="active"><b>01</b>本人照片</span><i>→</i><span><b>02</b>角色定妆</span><i>→</i><span><b>03</b>确认参赛</span>
+              <div className="identity-flow" aria-label="Character creation steps">
+                <span className="active"><b>01</b>Your photo</span><i>→</i><span><b>02</b>Character sheet</span><i>→</i><span><b>03</b>Confirm</span>
               </div>
 
               <label className="upload-zone">
-                {preview ? <img src={preview} alt="本人照片预览" /> : <span><b>+</b> 上传本人照片<small>清晰正面照 · JPG / PNG / WEBP · 最大 8MB</small></span>}
+                {preview ? <img src={preview} alt="Photo preview" /> : <span><b>+</b> Upload your photo<small>Clear, front-facing · JPG / PNG / WEBP · 8MB max</small></span>}
                 <input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => { setFile(event.target.files?.[0] || null); setCreditApproved(false); }} />
               </label>
 
               <label className="field-label">
-                <span>参赛名</span>
-                <input value={name} onChange={(event) => setName(event.target.value)} maxLength={20} placeholder="例如：北岸来客" required />
+                <span>Contestant name</span>
+                <input value={name} onChange={(event) => setName(event.target.value)} maxLength={20} placeholder="e.g. North Shore" required />
               </label>
 
               <label className="field-label">
-                <span>你想成为什么样的角色</span>
+                <span>What kind of contestant do you want to be</span>
                 <textarea
                   value={concept}
                   onChange={(event) => { setConcept(event.target.value); setCreditApproved(false); }}
                   maxLength={300}
                   rows={3}
-                  placeholder="随便写：身份、脾气、随身带着什么、身上有什么别人一眼认得出的东西……"
+                  placeholder="Anything: who you are, your temper, what you carry, what makes you unmistakable at a glance…"
                   required
                 />
-                <small>导演会把它扩写成完整设定，并给你一个非常显眼的标志性特征。</small>
+                <small>The director expands this into a full brief and gives you one unmistakable signature feature.</small>
               </label>
 
               <fieldset>
-                <legend>识别色</legend>
+                <legend>Accent colour</legend>
                 <div className="accent-row">
                   {accents.map((item) => (
-                    <button type="button" aria-label={`选择 ${item}`} className={item === accent ? "selected" : ""} style={{ background: item }} onClick={() => { setAccent(item); setCreditApproved(false); }} key={item} />
+                    <button type="button" aria-label={`Choose ${item}`} className={item === accent ? "selected" : ""} style={{ background: item }} onClick={() => { setAccent(item); setCreditApproved(false); }} key={item} />
                   ))}
                 </div>
               </fieldset>
 
               <label className="credit-consent">
                 <input type="checkbox" checked={creditApproved} onChange={(event) => setCreditApproved(event.target.checked)} />
-                <span>确认由导演扩写我的描述，并用 {cost?.displayName || "MiniMax 图片模型"} 生成 1 张角色定妆图。每个账号只能创建 1 个角色。</span>
+                <span>I agree the director may expand my description and generate one character sheet with {cost?.displayName || "the MiniMax image model"}. One contestant per account.</span>
               </label>
 
               {cost?.notice && <p className="channel-notice">{cost.notice}</p>}
               {error && <p className="form-error">{error}</p>}
               <button className="primary-action" disabled={busy || name.trim().length < 2 || concept.trim().length < 4 || !file || !cost?.available || !cost.sufficient || !creditApproved}>
-                {busy ? "正在提交角色生成…" : "生成我的参赛角色"}
+                {busy ? "Submitting…" : "Create my contestant"}
               </button>
-              <p className="consent-copy">原照片仅作为角色身份参考；定妆图完成后，本站会删除原照片存储副本。请仅上传你有权使用的照片。</p>
+              <p className="consent-copy">Your photo is used only as an identity reference and its stored copy is deleted once the sheet is made. Upload only a photo you have the right to use.</p>
             </form>
           </>
         ) : stage === "generating" ? (
           <section className="character-progress" aria-live="polite">
             <div className="forge-visual"><i /><span>{draft?.displayName?.slice(0, 1) || "?"}</span><b /></div>
-            <p>MiniMax 正在保留你的面部身份，并将服装、姿态与背景重塑为 <strong>{draft?.archetype || "生存挑战者"}</strong>。</p>
-            <div className="progress-steps"><span className="done">照片已加密上传</span><span className="active">角色定妆生成中</span><span>等待你的确认</span></div>
+            <p>MiniMax is keeping your face and rebuilding the wardrobe, pose and background as <strong>{draft?.archetype || "a survival contestant"}</strong>.</p>
+            <div className="progress-steps"><span className="done">Photo uploaded</span><span className="active">Making the sheet</span><span>Your confirmation</span></div>
             {error && <p className="form-error">{error}</p>}
-            <small>可以关闭窗口，稍后回来会继续读取同一个任务，不会重复扣费。</small>
+            <small>You can close this window; coming back picks up the same job without paying twice.</small>
           </section>
         ) : stage === "failed" ? (
           <section className="character-failed">
             <span>GENERATION INTERRUPTED</span>
-            <p>{error || draft?.error || "角色生成失败"}</p>
-            <button className="primary-action" onClick={startOver}>重新开始</button>
+            <p>{error || draft?.error || "Character generation failed"}</p>
+            <button className="primary-action" onClick={startOver}>Start over</button>
           </section>
         ) : (
           <section className="character-ready">
             <div className="character-card" style={{ "--character-accent": draft?.accent } as CSSProperties}>
-              {draft?.characterUrl && <img src={draft.characterUrl} alt={`${draft.displayName} 的角色定妆图`} />}
+              {draft?.characterUrl && <img src={draft.characterUrl} alt={`Character sheet for ${draft.displayName}`} />}
               <div><span>CONTESTANT READY</span><strong>{draft?.displayName}</strong><b>{draft?.archetype}</b></div>
             </div>
-            <p>这张定妆图将代替原照片出现在参赛名单中，并作为后续比赛镜头的角色身份锚点。</p>
+            <p>This sheet replaces your photo on the roster and anchors your identity in every shot that follows.</p>
             {error && <p className="form-error">{error}</p>}
             <div className="ready-actions">
-              <button className="secondary-action" onClick={startOver} disabled={stage === "joining"}>放弃此角色</button>
-              <button className="primary-action" onClick={joinMatch} disabled={stage === "joining"}>{stage === "joining" ? "正在进入候场区…" : "确认角色并参赛"}</button>
+              <button className="secondary-action" onClick={startOver} disabled={stage === "joining"}>Discard</button>
+              <button className="primary-action" onClick={joinMatch} disabled={stage === "joining"}>{stage === "joining" ? "Entering…" : "Confirm and enter"}</button>
             </div>
           </section>
         )}

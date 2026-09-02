@@ -107,12 +107,12 @@ export function ChatRoom({ messages, participants, waiting, allowance, onShowCli
         setSpent(!result.allowance?.next);
         return;
       }
-      if (!response.ok) throw new Error(result.error || "发送失败");
+      if (!response.ok) throw new Error(result.error || "Could not send");
       setDraft("");
       pinnedRef.current = true;
       onSent();
     } catch (cause) {
-      setNotice(cause instanceof Error ? cause.message : "发送失败");
+      setNotice(cause instanceof Error ? cause.message : "Could not send");
     } finally {
       setBusy(false);
     }
@@ -127,11 +127,11 @@ export function ChatRoom({ messages, participants, waiting, allowance, onShowCli
         body: JSON.stringify({ step: step.key }),
       });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "解锁失败");
+      if (!response.ok) throw new Error(result.error || "Could not unlock");
       setUnlock(null);
       onSent();
     } catch (cause) {
-      setNotice(cause instanceof Error ? cause.message : "解锁失败");
+      setNotice(cause instanceof Error ? cause.message : "Could not unlock");
     } finally {
       setUnlocking(false);
     }
@@ -139,16 +139,16 @@ export function ChatRoom({ messages, participants, waiting, allowance, onShowCli
 
   const quotaLabel = !allowance || allowance.unlimited
     ? null
-    : `${allowance.remaining} / ${allowance.allowance} 次发言`;
+    : `${allowance.remaining} / ${allowance.allowance} messages`;
 
   return (
-    <aside className="chat-panel" aria-label="直播间聊天">
+    <aside className="chat-panel" aria-label="Live chat">
       <div className="panel-heading">
         <div>
           <span className="eyebrow">LIVE CHAT</span>
-          <h2>聊天室</h2>
+          <h2>Live chat</h2>
         </div>
-        <span className="alive-count">{quotaLabel ?? `${waiting} 条待拍`}</span>
+        <span className="alive-count">{quotaLabel ?? `${waiting} queued`}</span>
       </div>
 
       <div
@@ -160,15 +160,15 @@ export function ChatRoom({ messages, participants, waiting, allowance, onShowCli
         }}
       >
         {messages.length === 0
-          ? <p className="chat-empty">还没有人说话。写一条，导演会把它拍成下一段画面。<br />用 <b>@角色名</b> 点名，被点到的人就会一起出现。</p>
+          ? <p className="chat-empty">Nobody has spoken yet. Write a line and the director films it as the next clip.<br />Use <b>@name</b> to cast someone — everyone you name shows up in the same shot.</p>
           : messages.map((message) => (
             <div className={message.filmed ? "chat-line is-filmed" : "chat-line"} key={message.id}>
               <span className="chat-who">{message.display_name}</span>
               <p>{renderBody(message.body, byName)}</p>
               {message.filmed ? (
                 message.generation_id != null
-                  ? <button type="button" className="chat-jump" onClick={() => onShowClip(message.generation_id!)}>看这一段 <span>→</span></button>
-                  : <em>已拍成画面</em>
+                  ? <button type="button" className="chat-jump" onClick={() => onShowClip(message.generation_id!)}>Watch it <span>→</span></button>
+                  : <em>FILMED</em>
               ) : null}
             </div>
           ))}
@@ -196,7 +196,7 @@ export function ChatRoom({ messages, participants, waiting, allowance, onShowCli
             ref={inputRef}
             value={draft}
             maxLength={CHAT_MAX}
-            placeholder={isAuthenticated ? "说点什么，或 @角色名 点名" : "登录后即可发言"}
+            placeholder={isAuthenticated ? "Say something, or @name to cast" : "Sign in to chat"}
             onChange={(event) => {
               setDraft(event.target.value);
               trackTrigger(event.target.value, event.target.selectionStart ?? event.target.value.length);
@@ -215,18 +215,18 @@ export function ChatRoom({ messages, participants, waiting, allowance, onShowCli
             }}
           />
           <button type="button" onClick={() => void send()} disabled={busy || draft.trim().length < 2}>
-            {busy ? "…" : "发送"}
+            {busy ? "…" : "Send"}
           </button>
         </div>
         {notice ? <p className="chat-notice">{notice}</p> : null}
-        {spent && !unlock ? <p className="chat-notice">发言机会已经全部用完了，谢谢你把故事推到这里。</p> : null}
+        {spent && !unlock ? <p className="chat-notice">You are out of messages. Thanks for pushing the story this far.</p> : null}
       </div>
 
       {unlock ? createPortal((
         // Portalled to the body: the panel clips its overflow, and the card is wider than the panel.
         <div className="chat-unlock" role="dialog" aria-label={unlock.title}>
           <div className="chat-unlock-card">
-            <span className="eyebrow">再来 {unlock.grant} 次</span>
+            <span className="eyebrow">{unlock.grant} more</span>
             <h3>{unlock.title}</h3>
             <p>{unlock.detail}</p>
             {/* Going there is the whole ask — nothing on this side can check what happens next, so
@@ -238,9 +238,9 @@ export function ChatRoom({ messages, participants, waiting, allowance, onShowCli
               rel="noreferrer noopener"
               onClick={() => void claimUnlock(unlock)}
             >
-              {unlocking ? "解锁中…" : unlock.cta} <span>↗</span>
+              {unlocking ? "Unlocking…" : unlock.cta} <span>↗</span>
             </a>
-            <button type="button" className="chat-unlock-close" onClick={() => setUnlock(null)}>以后再说</button>
+            <button type="button" className="chat-unlock-close" onClick={() => setUnlock(null)}>Maybe later</button>
           </div>
         </div>
       ), document.body) : null}

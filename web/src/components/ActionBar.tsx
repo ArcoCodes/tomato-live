@@ -6,9 +6,9 @@ const VIEWER_PROMPT_MAX = 300;
 const CLIP_SECONDS = 10;
 
 const fallbackChoices: StoryChoice[] = [
-  { id: "signal", title: "追踪异常信号", detail: "沿着断续电波深入雨林。", participantHint: "等待直播状态", round: 0, recentEvent: null },
-  { id: "beacon", title: "强修信标", detail: "冒雨尝试恢复坐标。", participantHint: "等待直播状态", round: 0, recentEvent: null },
-  { id: "shelter", title: "抢建庇护", detail: "先争取一个避风点。", participantHint: "等待直播状态", round: 0, recentEvent: null },
+  { id: "signal", title: "Chase the signal", detail: "Follow the broken transmission deeper into the rainforest.", participantHint: "Waiting on the feed", round: 0, recentEvent: null },
+  { id: "beacon", title: "Force the beacon", detail: "Try to restore the coordinates in the rain.", participantHint: "Waiting on the feed", round: 0, recentEvent: null },
+  { id: "shelter", title: "Throw up shelter", detail: "Get something between you and the wind first.", participantHint: "Waiting on the feed", round: 0, recentEvent: null },
 ];
 
 export function ActionBar({ participant, roster, myCharacters, onSwitchCharacter, linkOffers, control, choices, pendingGeneration, onUpdated }: {
@@ -92,11 +92,11 @@ export function ActionBar({ participant, roster, myCharacters, onSwitchCharacter
   async function submit() {
     const viewerPrompt = draft.trim();
     if (viewerPrompt.length < 2) {
-      setNotice("先写下你想让角色做什么");
+      setNotice("Write what your contestant should do");
       return;
     }
     if (locked) {
-      setNotice("你的视角通道还在生成上一段，完成后会自动开放");
+      setNotice("Your channel is still filming the last clip; it opens up when that lands");
       return;
     }
     setBusy(true);
@@ -108,7 +108,7 @@ export function ActionBar({ participant, roster, myCharacters, onSwitchCharacter
         body: JSON.stringify({ ...control, viewerPrompt, linkFromGenerationId: linkFrom?.id ?? null }),
       });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "指令提交失败");
+      if (!response.ok) throw new Error(result.error || "Could not submit");
       setDraft("");
       setLinkFrom(null);
       closePicker();
@@ -118,11 +118,11 @@ export function ActionBar({ participant, roster, myCharacters, onSwitchCharacter
         void client.api.fetch(`/api/public/generations/${result.generation.id}/sync`, { method: "POST" });
       }
       setNotice(result.guests?.length
-        ? `${result.message || "指令已生效"}，联动 ${result.guests.join("、")}`
-        : result.message || "指令已生效，正在生成你的视角片段");
+        ? `${result.message || "Filming now"} — with ${result.guests.join(", ")}`
+        : result.message || "Filming now — your channel is making the clip");
       onUpdated();
     } catch (cause) {
-      setNotice(cause instanceof Error ? cause.message : "指令提交失败");
+      setNotice(cause instanceof Error ? cause.message : "Could not submit");
     } finally {
       setBusy(false);
     }
@@ -154,14 +154,14 @@ export function ActionBar({ participant, roster, myCharacters, onSwitchCharacter
   }
 
   const visibleChoices = choices.length ? choices : fallbackChoices;
-  const hints = [mentionable.length ? "@ 拉人进画面" : "", linkOffers.length ? "/ 接续别人的画面" : ""].filter(Boolean);
+  const hints = [mentionable.length ? "@ to cast someone" : "", linkOffers.length ? "/ to continue a shot" : ""].filter(Boolean);
   const busyText = pendingGeneration?.stage === "video"
-    ? `岛上画面正在传回，${CLIP_SECONDS} 秒的片段，很快就好…`
-    : "正在锁定岛上的信号，准备记录这一步…";
+    ? `Footage is coming back from the island, a ${CLIP_SECONDS}s clip, nearly there…`
+    : "Acquiring the signal to record this move…";
   const statusText = notice
     || (channelBusy ? busyText : hints.length
-      ? `写下你想让角色做什么，输入 ${hints.join("、")}`
-      : "写下你想让角色做什么，会生成你自己的视角片段");
+      ? `Write what your contestant does — ${hints.join(", ")}`
+      : "Write what your contestant does and your channel films it");
 
   return (
     <section className="action-bar">
@@ -172,7 +172,7 @@ export function ActionBar({ participant, roster, myCharacters, onSwitchCharacter
               <button
                 key={item.id}
                 type="button"
-                title={`切换到 ${item.display_name}`}
+                title={`Switch to ${item.display_name}`}
                 className={item.id === participant.id ? "active" : ""}
                 onClick={() => onSwitchCharacter(item.id)}
               >
@@ -199,8 +199,8 @@ export function ActionBar({ participant, roster, myCharacters, onSwitchCharacter
       <div className="action-compose">
         <div className="action-shortcuts">
           {linkFrom ? (
-            <button type="button" className="link-chip" onClick={() => setLinkFrom(null)} title="移除这个起始画面">
-              接续 {linkFrom.fromName} 的画面 ✕
+            <button type="button" className="link-chip" onClick={() => setLinkFrom(null)} title="Drop this opening frame">
+              Continuing {linkFrom.fromName} ✕
             </button>
           ) : null}
           {visibleChoices.map((choice) => (
@@ -240,8 +240,8 @@ export function ActionBar({ participant, roster, myCharacters, onSwitchCharacter
                       className={index === pickIndex ? "active" : ""}
                       onMouseDown={(event) => { event.preventDefault(); applyPick(index); }}
                     >
-                      <b>接续 {item.fromName} 的画面</b>
-                      <small>{item.summary ?? "以那一帧为起点"}</small>
+                      <b>Continue from {item.fromName}</b>
+                      <small>{item.summary ?? "Open on that frame"}</small>
                     </button>
                   </li>
                 );
@@ -252,7 +252,7 @@ export function ActionBar({ participant, roster, myCharacters, onSwitchCharacter
             ref={inputRef}
             value={draft}
             maxLength={VIEWER_PROMPT_MAX}
-            placeholder={linkFrom ? "从那一帧接着往下拍…" : mentionable.length ? "例如：顶着暴雨爬上礁石，@ 队友从下面接应" : "例如：顶着暴雨爬上礁石，把信号弹举过头顶"}
+            placeholder={linkFrom ? "Pick up from that frame…" : mentionable.length ? "e.g. climb the rocks through the squall, @someone bracing below" : "e.g. climb the rocks through the squall, flare held overhead"}
             disabled={locked}
             onChange={(event) => {
               setDraft(event.target.value);
@@ -263,7 +263,7 @@ export function ActionBar({ participant, roster, myCharacters, onSwitchCharacter
             onKeyDown={handleKeyDown}
           />
           <button type="button" className="primary-action" disabled={locked || draft.trim().length < 2} onClick={() => void submit()}>
-            {busy ? "发送指令中" : channelBusy ? (pendingGeneration?.stage === "video" ? "画面回传中" : "正在锁定信号") : "生成这一段"}
+            {busy ? "Sending" : channelBusy ? (pendingGeneration?.stage === "video" ? "Feed incoming" : "Acquiring signal") : "Film this"}
           </button>
         </div>
         <p className="action-notice">{statusText}</p>

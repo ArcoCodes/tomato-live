@@ -27,11 +27,11 @@ export function LoginDialog({ open, onClose }: { open: boolean; onClose: () => v
   if (!open) return null;
   return (
     <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <div className="auth-dialog" role="dialog" aria-modal="true" aria-label="登录">
-        <button className="modal-close" onClick={onClose} aria-label="关闭">×</button>
+      <div className="auth-dialog" role="dialog" aria-modal="true" aria-label="Sign in">
+        <button className="modal-close" onClick={onClose} aria-label="Close">×</button>
         <div className="dialog-index">ACCOUNT</div>
-        <h2>登录后加入挑战</h2>
-        <p>角色归属于账号：登录后创建的角色不会因为换设备或清空浏览器缓存而失去控制权。</p>
+        <h2>Sign in to join</h2>
+        <p>Contestants belong to your account, so a new device or a cleared browser never costs you control of yours.</p>
         <div ref={mountRef} />
       </div>
     </div>
