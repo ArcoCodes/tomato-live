@@ -52,11 +52,37 @@ export interface ChannelTab {
   isMark?: boolean;
 }
 
-export function Broadcast({ clips, channels, activeChannel, onSelectChannel }: {
+/** The two real stages of the pipeline, so the bar advances on fact rather than on a timer alone. */
+function GenerationProgress({ stage }: { stage: "queued" | "keyframe" | "video" }) {
+  const writing = stage !== "video";
+  return (
+    <div className="gen-progress">
+      <div className="gen-progress-rail">
+        <i
+          // Re-keyed per stage so the crawl restarts from the new stage's baseline.
+          key={writing ? "writing" : "rendering"}
+          style={{
+            "--from": writing ? "6%" : "52%",
+            "--to": writing ? "48%" : "94%",
+            "--dur": writing ? "14s" : "24s",
+          } as React.CSSProperties}
+        />
+      </div>
+      <div className="gen-progress-copy">
+        <strong>{writing ? "编写分镜中" : "生成画面中"}</strong>
+        <span>{writing ? "正在把你的指令扩写成完整分镜" : "MiniMax 正在渲染，约 20 秒"}</span>
+      </div>
+    </div>
+  );
+}
+
+export function Broadcast({ clips, channels, activeChannel, onSelectChannel, myPendingStage }: {
   clips: BroadcastClip[];
   channels: ChannelTab[];
   activeChannel: string;
   onSelectChannel: (key: string) => void;
+  /** This viewer's own generation, if one is running — it gets a prominent bar, not a small label. */
+  myPendingStage?: "queued" | "keyframe" | "video";
 }) {
   const playable = useMemo(
     () => clips
@@ -431,6 +457,7 @@ export function Broadcast({ clips, channels, activeChannel, onSelectChannel }: {
           </div>
         ) : null}
         <div className="scan-lines" />
+        {myPendingStage ? <GenerationProgress stage={myPendingStage} /> : null}
         {/* The timeline summary doubles as a caption, so the show reads even with the sound off. */}
         {clip?.summary && firstFrameShown ? (
           <div className="broadcast-subtitle">

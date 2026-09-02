@@ -206,6 +206,9 @@ function App() {
     }));
   }, [control?.participantId, live]);
 
+  const myPendingStage = (live?.pending_generations ?? [])
+    .find((item) => item.channel_participant_id === control?.participantId)?.stage;
+
   const channelClips = useMemo(
     () => (live?.clips ?? []).filter((clip) => channelKeyFor(clip) === activeChannel),
     [activeChannel, live?.clips],
@@ -317,6 +320,7 @@ function App() {
           channels={channels}
           activeChannel={activeChannel}
           onSelectChannel={setActiveChannel}
+          myPendingStage={myPendingStage}
         />
         <EventFeed events={live.events} />
       </main>
