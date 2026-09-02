@@ -1,5 +1,4 @@
-import { useState, type CSSProperties } from "react";
-import { createPortal } from "react-dom";
+import type { CSSProperties } from "react";
 import type { Participant } from "@/types/live";
 
 const statusLabel = {
@@ -9,18 +8,8 @@ const statusLabel = {
   eliminated: "Out",
 };
 
-interface Hint {
-  name: string;
-  detail: string;
-  x: number;
-  y: number;
-}
-
 export function Roster({ participants, selectedId }: { participants: Participant[]; selectedId?: number }) {
   const alive = participants.filter((item) => item.status !== "eliminated").length;
-  // Portalled to the body: the panel scrolls, so a tooltip drawn inside it would be clipped by the
-  // first row it belongs to.
-  const [hint, setHint] = useState<Hint | null>(null);
 
   return (
     <aside className="roster-panel" aria-label="Contestants">
@@ -32,38 +21,27 @@ export function Roster({ participants, selectedId }: { participants: Participant
         <span className="alive-count">{alive} ALIVE</span>
       </div>
 
-      {/* Faces only: the cast keeps growing, and names would set the panel's floor width. */}
-      <div className="roster-list" onScroll={() => setHint(null)}>
+      <div className="roster-list">
         {participants.map((participant) => (
-          <div
-            className={`roster-face status-${participant.status}${selectedId === participant.id ? " is-you" : ""}`}
+          <article
+            className={`hero-card status-${participant.status}${selectedId === participant.id ? " is-you" : ""}`}
             key={participant.id}
-            style={{ "--avatar-accent": participant.accent } as CSSProperties}
-            onMouseEnter={(event) => {
-              const box = event.currentTarget.getBoundingClientRect();
-              setHint({
-                name: participant.display_name,
-                detail: `${participant.archetype} · ${statusLabel[participant.status]}`,
-                x: box.left + box.width / 2,
-                y: box.top,
-              });
-            }}
-            onMouseLeave={() => setHint(null)}
+            style={{ "--accent": participant.accent } as CSSProperties}
           >
-            {participant.portrait_url
-              ? <img src={participant.portrait_url} alt={participant.display_name} loading="lazy" />
-              : <span>{participant.display_name.slice(0, 2).toUpperCase()}</span>}
-          </div>
+            <div className="hero-portrait">
+              {participant.portrait_url
+                ? <img src={participant.portrait_url} alt={participant.display_name} loading="lazy" />
+                : <i>{participant.display_name.slice(0, 2).toUpperCase()}</i>}
+              <span className="hero-status">{statusLabel[participant.status]}</span>
+              {selectedId === participant.id ? <span className="hero-you">YOU</span> : null}
+            </div>
+            <div className="hero-meta">
+              <strong>{participant.display_name}</strong>
+              <span>{participant.archetype}</span>
+            </div>
+          </article>
         ))}
       </div>
-
-      {hint && createPortal(
-        <div className="roster-hint" style={{ left: hint.x, top: hint.y }}>
-          <strong>{hint.name}</strong>
-          <span>{hint.detail}</span>
-        </div>,
-        document.body,
-      )}
     </aside>
   );
 }
