@@ -318,6 +318,7 @@ function App() {
         <Roster participants={live.participants} selectedId={control?.participantId} />
         <Broadcast
           clips={channelClips}
+          participants={live.participants}
           channels={channels}
           activeChannel={activeChannel}
           onSelectChannel={setActiveChannel}

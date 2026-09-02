@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type RefObject, type SyntheticEvent } from "react";
-import type { BroadcastClip } from "@/types/live";
+import type { BroadcastClip, Participant } from "@/types/live";
 
 // Playback tracing: add ?debug to the URL, or set localStorage.broadcastDebug = "1".
 const DEBUG = (() => {
@@ -76,8 +76,10 @@ function GenerationProgress({ stage }: { stage: "queued" | "keyframe" | "video" 
   );
 }
 
-export function Broadcast({ clips, channels, activeChannel, onSelectChannel, myPendingStage }: {
+export function Broadcast({ clips, participants, channels, activeChannel, onSelectChannel, myPendingStage }: {
   clips: BroadcastClip[];
+  /** Needed to show whose clip each archive card is, by character sheet rather than by name. */
+  participants: Participant[];
   channels: ChannelTab[];
   activeChannel: string;
   onSelectChannel: (key: string) => void;
@@ -122,6 +124,17 @@ export function Broadcast({ clips, channels, activeChannel, onSelectChannel, myP
   const standbyReadyKey = standbyClip ? `${standbySlot}:${standbyClip.id}` : "";
   const latestClipId = playable[playable.length - 1]?.id ?? null;
   const history = [...playable].reverse();
+
+  // Owner first so their sheet sits on top of the fan; guests peek out behind it.
+  function castOf(clip: BroadcastClip) {
+    const ids = [clip.channel_participant_id, ...clip.participant_ids]
+      .filter((id): id is number => id != null);
+    const seen = new Set<number>();
+    return ids
+      .filter((id) => (seen.has(id) ? false : seen.add(id)))
+      .map((id) => participants.find((item) => item.id === id))
+      .filter((item): item is Participant => Boolean(item));
+  }
 
   useEffect(() => {
     if (playable.length === 0) {
@@ -500,6 +513,25 @@ export function Broadcast({ clips, channels, activeChannel, onSelectChannel, myP
               title={item.summary ?? undefined}
               onClick={() => jumpToClip(item.id)}
             >
+              <span className="clip-cast">
+                {castOf(item).slice(0, 3).map((member, index, all) => (
+                  <span
+                    key={member.id}
+                    className="clip-card"
+                    title={member.display_name}
+                    style={{
+                      // Fanned around centre; the tilt lives in a variable so the hover lift can
+                      // compose with it instead of overwriting the transform.
+                      "--tilt": `${(index - (all.length - 1) / 2) * 8}deg`,
+                      zIndex: all.length - index,
+                    } as React.CSSProperties}
+                  >
+                    {member.avatar_url
+                      ? <img src={member.avatar_url} alt="" loading="lazy" />
+                      : <i>{member.display_name.slice(0, 1)}</i>}
+                  </span>
+                ))}
+              </span>
               <span className="clip-thumb">
                 {item.thumbnail_url
                   ? <img src={item.thumbnail_url} alt="" loading="lazy" />
