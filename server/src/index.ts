@@ -795,14 +795,23 @@ function generationSlotError(
   active: Array<typeof generations.$inferSelect>,
   channel: "director" | "participant",
   participantId: number | null,
-  concurrent: number,
+  tier: GenerationTier,
 ) {
-  const sameChannel = active.find((item) =>
-    item.channel === channel && (item.channel_participant_id ?? null) === participantId);
-  if (sameChannel) {
-    return { status: 409 as const, error: "这条通道上一段还在生成中，等它进入直播队列后再继续", generation: sameChannel };
+  if (channel === "director") {
+    // Director cuts have nothing to serialise on: each one opens on a different contestant's tail
+    // frame. Only the tier's ceiling limits them.
+    const running = active.filter((item) => item.channel === "director");
+    if (running.length >= tier.directorSlots) {
+      return { status: 409 as const, error: "导播线同时生成的片段已达上限", generation: running[0] };
+    }
+  } else {
+    const sameChannel = active.find((item) =>
+      item.channel === channel && (item.channel_participant_id ?? null) === participantId);
+    if (sameChannel) {
+      return { status: 409 as const, error: "这条通道上一段还在生成中，等它进入直播队列后再继续", generation: sameChannel };
+    }
   }
-  if (active.length >= concurrent) {
+  if (active.length >= tier.concurrent) {
     return { status: 429 as const, error: "同时生成的片段已达上限，稍后再试", generation: null };
   }
   return null;
@@ -1095,24 +1104,31 @@ async function characterQuota(matchId: number) {
 async function persistVideoResult(generationId: number, remoteUrl: string) {
   // Falling back to the provider's temporary URL means the clip 404s in a few hours, so the reason
   // is recorded rather than swallowed.
-  try {
-    const response = await fetch(remoteUrl);
-    if (!response.ok) throw new Error(`download failed (${response.status})`);
-    const bytes = await response.arrayBuffer();
-    const path = `matches/${LIVE_SLUG}/generation-${generationId}.mp4`;
-    await storage.from(buckets.broadcastClips).put(path, bytes, {
-      contentType: response.headers.get("content-type") || "video/mp4",
-      cacheControl: "public, max-age=31536000, immutable",
-    });
-    return storage.createS3Uri(buckets.broadcastClips, path);
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : "unknown";
-    await db.update(generations)
-      .set({ error_message: `片段未能落盘，仍在使用临时外链：${reason}` })
-      .where(eq(generations.id, generationId))
-      .catch(() => undefined);
-    return remoteUrl;
+  let lastReason = "unknown";
+  // Several clips finish at once at the higher tiers and R2 answers the burst with "reduce your
+  // concurrent request rate". That is transient and worth waiting out: losing the upload costs the
+  // whole clip, which is already paid for.
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 400 * 2 ** (attempt - 1)));
+      const response = await fetch(remoteUrl);
+      if (!response.ok) throw new Error(`download failed (${response.status})`);
+      const bytes = await response.arrayBuffer();
+      const path = `matches/${LIVE_SLUG}/generation-${generationId}.mp4`;
+      await storage.from(buckets.broadcastClips).put(path, bytes, {
+        contentType: response.headers.get("content-type") || "video/mp4",
+        cacheControl: "public, max-age=31536000, immutable",
+      });
+      return storage.createS3Uri(buckets.broadcastClips, path);
+    } catch (error) {
+      lastReason = error instanceof Error ? error.message : "unknown";
+    }
   }
+  await db.update(generations)
+    .set({ error_message: `片段未能落盘，仍在使用临时外链：${lastReason}` })
+    .where(eq(generations.id, generationId))
+    .catch(() => undefined);
+  return remoteUrl;
 }
 
 async function persistTailFrame(generationId: number, frame: { bytes: ArrayBuffer; contentType: string }) {
@@ -1222,7 +1238,7 @@ async function queueLiveGeneration(request: GenerationRequest, createdBy: string
   }
 
   const active = await activeGenerations(match.id);
-  const slotError = generationSlotError(active, request.channel, request.channelParticipantId, tierOf(match).concurrent);
+  const slotError = generationSlotError(active, request.channel, request.channelParticipantId, tierOf(match));
   if (slotError) {
     const error = new Error(slotError.error);
     error.name = slotError.status === 409 ? "ConflictError" : "RateLimitError";
@@ -1568,6 +1584,10 @@ interface GenerationTier {
   label: string;
   detail: string;
   concurrent: number;
+  // Per-line ceilings. A contestant channel is single-file whatever the tier says — its clips chain
+  // tail frame to tail frame and two at once would fork the chain — so houseSlots is how many
+  // different contestants may be filming at the same time.
+  directorSlots: number;
   houseSlots: number;
   gapSeconds: number;
   // Low tiers pace the director on the same clock as the cast, so "one clip an hour" means one
@@ -1578,10 +1598,11 @@ const GENERATION_TIERS: Record<GenerationTierKey, GenerationTier> = {
   live: {
     key: "live",
     label: "直播档",
-    detail: "最多 3 段同时渲染，角色线 2 段并行，每 20 秒开新的一段。",
-    concurrent: 3,
-    houseSlots: 2,
-    gapSeconds: 20,
+    detail: "角色线 3 段并行，导播线 2 段并行，出片约每分钟 10 段。",
+    concurrent: 5,
+    directorSlots: 2,
+    houseSlots: 3,
+    gapSeconds: 4,
     gapCoversDirector: false,
   },
   idle: {
@@ -1589,6 +1610,7 @@ const GENERATION_TIERS: Record<GenerationTierKey, GenerationTier> = {
     label: "低耗档",
     detail: "一次只渲染 1 段，每分钟开一段。没什么人看的时候用这档。",
     concurrent: 1,
+    directorSlots: 1,
     houseSlots: 1,
     gapSeconds: 60,
     gapCoversDirector: true,
@@ -1598,6 +1620,7 @@ const GENERATION_TIERS: Record<GenerationTierKey, GenerationTier> = {
     label: "休眠档",
     detail: "一次只渲染 1 段，每小时开一段。几乎不产生费用，直播基本静止。",
     concurrent: 1,
+    directorSlots: 1,
     houseSlots: 1,
     gapSeconds: 3600,
     gapCoversDirector: true,
@@ -1626,8 +1649,10 @@ async function maybeAdvanceHouseCast(match: typeof matches.$inferSelect) {
   try {
     requireMiniMax();
     const active = await activeGenerations(matchId);
-    // Leave the rest of the queue for viewers: the house cast never fills it.
-    if (active.length >= tier.houseSlots) return null;
+    if (active.length >= tier.concurrent) return null;
+    // Count the house line against its own ceiling, so the director does not squeeze it out.
+    const houseActive = active.filter((item) => item.created_by.startsWith("house:")).length;
+    if (houseActive >= tier.houseSlots) return null;
 
     const [tally] = await db.select({ total: sql<number>`count(*)` }).from(generations)
       .where(and(eq(generations.match_id, matchId), sql`${generations.created_by} like 'house:%'`));
@@ -1675,7 +1700,7 @@ async function maybeStartDirectorClip(match: typeof matches.$inferSelect) {
   try {
     requireMiniMax();
     const active = await activeGenerations(matchId);
-    if (generationSlotError(active, "director", null, tier.concurrent)) return null;
+    if (generationSlotError(active, "director", null, tier)) return null;
     if (tier.gapCoversDirector && await autoQueuedWithin(matchId, tier.gapSeconds, false) > 0) return null;
     const source = await pickDirectorSource(matchId);
     if (!source?.channel_participant_id || !source.thumbnail_url) return null;
@@ -2240,7 +2265,7 @@ const app = new Hono()
 
     // Only this contestant's own channel has to be idle; other channels keep running in parallel.
     const active = await activeGenerations(match.id);
-    const slotError = generationSlotError(active, "participant", participant.id, tierOf(match).concurrent);
+    const slotError = generationSlotError(active, "participant", participant.id, tierOf(match));
     if (slotError) return c.json({ error: slotError.error, generation: slotError.generation }, slotError.status);
 
     const roster = await db.select().from(participants).where(and(
