@@ -474,61 +474,64 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
       </div>
 
       <div className="broadcast-media">
-        {clip?.result_url ? (
-          <>
-            {renderVideoSlot(0, slotARef)}
-            {renderVideoSlot(1, slotBRef)}
-          </>
-        ) : null}
-        {showPlaceholder ? (
-          <div
-            className={`generated-scene${clip?.result_url ? " is-cover" : ""}${firstFrameShown ? " is-dimmed" : ""}`}
-            role="img"
-            aria-label="风暴前的荒岛雨林直播模拟画面"
-          >
-            <div className="moon" />
-            <div className="ridge ridge-back" />
-            <div className="ridge ridge-front" />
-            <div className="watchtower"><i /><b /></div>
-            <div className="camp-light" />
-            <div className="fog fog-a" />
-            <div className="fog fog-b" />
-            <div className="rain" />
-          </div>
-        ) : null}
-        <div className="scan-lines" />
-        {myPendingStage ? <GenerationProgress stage={myPendingStage} /> : null}
-        {/* The timeline summary doubles as a caption, so the show reads even with the sound off. */}
-        {clip?.summary && firstFrameShown ? (
-          <div className="broadcast-subtitle">
-            <span>{activeChannel === "director" ? "现场解说" : "画面记录"}</span>
-            <p>{clip.summary}</p>
-          </div>
-        ) : null}
-        {clip?.result_url ? (
-          <button
-            type="button"
-            className={muted ? "sound-toggle" : "sound-toggle is-live"}
-            aria-label={muted ? "开启声音" : "静音"}
-            onClick={() => {
-              if (!muted) {
-                setSoundOn(false);
-                return;
-              }
-              // A click is a gesture, so unmuting from here always succeeds.
-              setSoundOn(true);
-              const video = activeSlot === 0 ? slotARef.current : slotBRef.current;
-              if (!video) return;
-              video.muted = false;
-              void video.play().then(() => {
-                soundUnlockedRef.current = true;
-                setMuted(false);
-              }).catch(() => undefined);
-            }}
-          >
-            {muted ? (soundOn ? "🔇 点击任意处开启声音" : "🔇 已静音") : "🔊 声音已开"}
-          </button>
-        ) : null}
+        <div className="broadcast-frame">
+          {clip?.result_url ? (
+            <>
+              {renderVideoSlot(0, slotARef)}
+              {renderVideoSlot(1, slotBRef)}
+            </>
+          ) : null}
+          {showPlaceholder ? (
+            <div
+              className={`generated-scene${clip?.result_url ? " is-cover" : ""}${firstFrameShown ? " is-dimmed" : ""}`}
+              role="img"
+              aria-label="风暴前的荒岛雨林直播模拟画面"
+            >
+              <div className="moon" />
+              <div className="ridge ridge-back" />
+              <div className="ridge ridge-front" />
+              <div className="watchtower"><i /><b /></div>
+              <div className="camp-light" />
+              <div className="fog fog-a" />
+              <div className="fog fog-b" />
+              <div className="rain" />
+            </div>
+          ) : null}
+          <div className="scan-lines" />
+          {myPendingStage ? <GenerationProgress stage={myPendingStage} /> : null}
+          {/* The timeline summary doubles as a caption, so the show reads even with the sound off. */}
+          {clip?.summary && firstFrameShown ? (
+            <div className="broadcast-subtitle">
+              <span>{activeChannel === "director" ? "现场解说" : "画面记录"}</span>
+              <p>{clip.summary}</p>
+            </div>
+          ) : null}
+          {clip?.result_url ? (
+            <button
+              type="button"
+              className={muted ? "sound-toggle" : "sound-toggle is-live"}
+              aria-label={muted ? "开启声音" : "静音"}
+              title={muted ? "开启声音" : "静音"}
+              onClick={() => {
+                if (!muted) {
+                  setSoundOn(false);
+                  return;
+                }
+                // A click is a gesture, so unmuting from here always succeeds.
+                setSoundOn(true);
+                const video = activeSlot === 0 ? slotARef.current : slotBRef.current;
+                if (!video) return;
+                video.muted = false;
+                void video.play().then(() => {
+                  soundUnlockedRef.current = true;
+                  setMuted(false);
+                }).catch(() => undefined);
+              }}
+            >
+              {muted ? "🔇" : "🔊"}
+            </button>
+          ) : null}
+        </div>
       </div>
 
       <div className="clip-history" aria-label="历史片段">

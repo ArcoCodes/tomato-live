@@ -93,7 +93,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .status-danger .roster-state span { color: var(--danger); }
 
 .broadcast { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
-.broadcast-media { width: 100%; flex: 1 1 0; min-height: 120px; position: relative; overflow: hidden; border-radius: var(--r-xl); background: var(--stage); box-shadow: var(--sh-3); }
+.broadcast-media { width: 100%; flex: 1 1 0; min-height: 120px; display: grid; place-items: center; container-type: size; }
+.broadcast-frame { position: relative; width: min(100cqw, calc(100cqh * 16 / 9)); aspect-ratio: 16 / 9; overflow: hidden; border-radius: var(--r-xl); background: var(--stage); box-shadow: var(--sh-3); }
 .broadcast video { width: 100%; height: 100%; object-fit: contain; display: block; background: var(--stage); }
 .stream-video { position: absolute; inset: 0; opacity: 0; background: var(--stage); transform: translateZ(0); transition: opacity .16s linear; }
 .stream-video.is-active { opacity: 1; z-index: 1; }
@@ -129,9 +130,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .gen-progress-copy span { color: rgba(255,255,255,.72); font-size: 10px; }
 @keyframes gen-crawl { from { width: var(--from); } to { width: var(--to); } }
 @keyframes soft-blink { 50% { opacity: .25; } }
-.sound-toggle { position: absolute; right: 12px; top: 12px; z-index: 4; padding: 7px 13px; border: 0; border-radius: var(--r-pill); background: rgba(255,255,255,.14); color: #fdfaf8; font: 8px var(--utility); letter-spacing: .1em; cursor: pointer; backdrop-filter: blur(8px); transition: background .16s ease, color .16s ease; }
-.sound-toggle:hover { background: rgba(255,255,255,.24); }
-.broadcast-media:has(.gen-progress) .sound-toggle { top: 62px; }
+.sound-toggle { position: absolute; right: 12px; top: 12px; z-index: 4; width: 32px; height: 32px; display: grid; place-items: center; border: 0; border-radius: 50%; background: rgba(255,255,255,.16); color: #fdfaf8; font-size: 13px; line-height: 1; cursor: pointer; backdrop-filter: blur(8px); transition: background .16s ease, transform .16s ease; }
+.sound-toggle:hover { background: rgba(255,255,255,.28); transform: scale(1.06); }
+.broadcast-frame:has(.gen-progress) .sound-toggle { top: 62px; }
 .sound-toggle.is-live { background: var(--brand); color: #fff; }
 .scan-lines { pointer-events: none; position: absolute; inset: 0; opacity: .08; background: repeating-linear-gradient(180deg, transparent 0 3px, rgba(0,0,0,.5) 4px); mix-blend-mode: multiply; }
 .channel-bar { flex: none; display: flex; gap: 6px; padding: 8px; overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--sh-1); }
@@ -317,7 +318,7 @@ fieldset { border: 0; padding: 0; margin: 0 0 20px; }
 
 @media (max-width: 760px) {
   .topbar { height: 64px; padding: 0 14px; }.brand-lockup strong { font-size: 20px; }.brand-lockup div span, .text-action { display: none; }.join-action { height: 36px; padding: 0 14px; }
-  .live-grid { height: auto; min-height: 0; display: flex; flex-direction: column; padding: 10px; gap: 10px; }.broadcast { order: 1; }.broadcast-media { height: min(63vw, 430px); min-height: 280px; flex: none; }
+  .live-grid { height: auto; min-height: 0; display: flex; flex-direction: column; padding: 10px; gap: 10px; }.broadcast { order: 1; }.broadcast-media { flex: none; container-type: normal; }.broadcast-frame { width: 100%; }
   .roster-panel { order: 2; }.panel-heading { min-height: 58px; }.roster-list { grid-auto-flow: column; grid-auto-columns: 48px; grid-template-columns: none; overflow-x: auto; }.story-panel { display: flex; order: 3; }
   .spectator-bar, .action-bar { height: auto; min-height: 120px; padding: 16px 14px; }.spectator-bar { grid-template-columns: 1fr auto; }.spectator-bar p { display: none; }.action-bar { grid-template-columns: 1fr; }.action-options { grid-template-columns: repeat(3, 1fr); }
   footer { padding: 0 14px; min-height: 42px; } footer > span { display: none; } footer div { width: 100%; justify-content: space-between; gap: 8px; }
