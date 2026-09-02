@@ -149,11 +149,15 @@ export const directorVotes = sqliteTable("director_votes", {
 // viewer said they did, and the allowance follows from it.
 export const viewerPerks = sqliteTable("viewer_perks", {
   id: integer("id").primaryKey({ autoIncrement: true }),
+  // The allowance follows the browser, not the account: chatting needs no sign-in. Kept as its own
+  // column so the account column stays what it always was.
+  device_id: text("device_id"),
   user_id: text("user_id").notNull(),
   tier: integer("tier").notNull().default(0),
   updated_at: text("updated_at").notNull().default(sql`(current_timestamp)`),
 }, (table) => [
   uniqueIndex("viewer_perks_user_unique").on(table.user_id),
+  uniqueIndex("viewer_perks_device_unique").on(table.device_id),
 ]);
 
 // Viewer chat. Messages are both the room's conversation and the queue the show pulls its next
@@ -161,7 +165,9 @@ export const viewerPerks = sqliteTable("viewer_perks", {
 export const chatMessages = sqliteTable("chat_messages", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   match_id: integer("match_id").notNull().references(() => matches.id),
+  // Empty for a signed-out viewer; the device is what identifies them and what the quota counts.
   user_id: text("user_id").notNull(),
+  device_id: text("device_id").notNull().default(""),
   display_name: text("display_name").notNull(),
   body: text("body").notNull(),
   // Participant ids the message mentioned, as JSON. They are pulled into the shot together.
@@ -175,6 +181,7 @@ export const chatMessages = sqliteTable("chat_messages", {
   index("chat_match_idx").on(table.match_id, table.id),
   // The picker asks for unconsumed messages constantly; this is the index it rides.
   index("chat_unconsumed_idx").on(table.match_id, table.consumed_at),
+  index("chat_device_idx").on(table.match_id, table.device_id),
 ]);
 
 export const generations = sqliteTable("generations", {

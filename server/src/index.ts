@@ -1706,19 +1706,31 @@ function nextUnlock(tier: number) {
   return { key: step.key, grant: step.grant, title: step.title, detail: step.detail, url: step.url, cta: step.cta };
 }
 
-async function viewerTier(userId: string) {
-  const [row] = await db.select().from(viewerPerks).where(eq(viewerPerks.user_id, userId)).limit(1);
+// Chatting needs no account, so the quota follows the browser. A viewer who clears their storage
+// gets a fresh allowance — that is the cost of not making people sign in to speak.
+function deviceIdOf(c: { req: { header(name: string): string | undefined } }) {
+  const raw = cleanText(c.req.header("X-Device-Id"), 64);
+  return /^[A-Za-z0-9_-]{8,64}$/.test(raw) ? raw : "";
+}
+
+function guestHandle(deviceId: string) {
+  return `guest-${deviceId.replace(/[^A-Za-z0-9]/g, "").slice(-4).toLowerCase() || "0000"}`;
+}
+
+async function viewerTier(deviceId: string) {
+  if (!deviceId) return 0;
+  const [row] = await db.select().from(viewerPerks).where(eq(viewerPerks.device_id, deviceId)).limit(1);
   return row?.tier ?? 0;
 }
 
-async function chatAllowanceState(matchId: number) {
-  if (!auth.user) return null;
+async function chatAllowanceState(matchId: number, deviceId: string) {
   if (isHostAccount()) {
     return { unlimited: true, used: 0, allowance: 0, remaining: 0, tier: CHAT_UNLOCKS.length - 1, next: null };
   }
+  if (!deviceId) return null;
   const [tally] = await db.select({ n: sql<number>`count(*)` }).from(chatMessages)
-    .where(and(eq(chatMessages.match_id, matchId), eq(chatMessages.user_id, auth.user.id)));
-  const tier = await viewerTier(auth.user.id);
+    .where(and(eq(chatMessages.match_id, matchId), eq(chatMessages.device_id, deviceId)));
+  const tier = await viewerTier(deviceId);
   const used = Number(tally?.n ?? 0);
   const allowance = chatAllowanceFor(tier);
   return {
@@ -1962,7 +1974,9 @@ function liveGenerationErrorStatus(error: unknown) {
 const app = new Hono()
   .get("/api/public/health", (c) => c.json({ ok: true, service: "tomato-live" }))
   .post("/api/public/chat", async (c) => {
-    if (!auth.user) return c.json({ error: "Sign in to chat" }, 401);
+    // No sign-in needed to speak; the browser identifies the viewer and carries their allowance.
+    const deviceId = deviceIdOf(c);
+    if (!deviceId) return c.json({ error: "This browser could not be identified" }, 400);
     const data = asObject(await c.req.json().catch(() => ({})));
     const body = cleanText(data.body, CHAT_MAX_CHARS);
     if (body.length < 2) return c.json({ error: "Write something first" }, 400);
@@ -1970,12 +1984,12 @@ const app = new Hono()
 
     const [recent] = await db.select({ n: sql<number>`count(*)` }).from(chatMessages).where(and(
       eq(chatMessages.match_id, match.id),
-      eq(chatMessages.user_id, auth.user.id),
+      eq(chatMessages.device_id, deviceId),
       sql`${chatMessages.created_at} >= datetime('now', ${`-${CHAT_COOLDOWN_SECONDS} seconds`})`,
     ));
     if (Number(recent?.n ?? 0) > 0) return c.json({ error: "Slow down a moment" }, 429);
 
-    const allowance = await chatAllowanceState(match.id);
+    const allowance = await chatAllowanceState(match.id, deviceId);
     if (allowance && !allowance.unlimited && allowance.remaining <= 0) {
       return c.json({
         error: allowance.next ? "You are out of messages" : "You have used every message",
@@ -1992,31 +2006,34 @@ const app = new Hono()
 
     const [row] = await db.insert(chatMessages).values({
       match_id: match.id,
-      user_id: auth.user.id,
-      display_name: chatHandle(auth.user.email ?? ""),
+      user_id: auth.user?.id ?? "",
+      device_id: deviceId,
+      // Signing in gets you your handle; everyone else speaks as a guest.
+      display_name: auth.user?.email ? chatHandle(auth.user.email) : guestHandle(deviceId),
       body,
       mentions: JSON.stringify(mentions),
     }).returning();
-    return c.json({ message: chatPayload(row), mentions, allowance: await chatAllowanceState(match.id) }, 201);
+    return c.json({ message: chatPayload(row), mentions, allowance: await chatAllowanceState(match.id, deviceId) }, 201);
   })
   .post("/api/public/chat/unlock", async (c) => {
-    if (!auth.user) return c.json({ error: "Sign in first" }, 401);
+    const deviceId = deviceIdOf(c);
+    if (!deviceId) return c.json({ error: "This browser could not be identified" }, 400);
     const data = asObject(await c.req.json().catch(() => ({})));
     const step = cleanText(data.step, 24);
     const match = await ensureLiveMatch();
-    const tier = await viewerTier(auth.user.id);
+    const tier = await viewerTier(deviceId);
     const pending = nextUnlock(tier);
     // Only the step actually on offer can be claimed, so a replayed call cannot skip a rung.
     if (!pending || pending.key !== step) {
-      return c.json({ error: "That unlock is already claimed", allowance: await chatAllowanceState(match.id) }, 409);
+      return c.json({ error: "That unlock is already claimed", allowance: await chatAllowanceState(match.id, deviceId) }, 409);
     }
     await db.insert(viewerPerks)
-      .values({ user_id: auth.user.id, tier: tier + 1 })
+      .values({ device_id: deviceId, user_id: auth.user?.id ?? `device:${deviceId}`, tier: tier + 1 })
       .onConflictDoUpdate({
-        target: viewerPerks.user_id,
+        target: viewerPerks.device_id,
         set: { tier: tier + 1, updated_at: new Date().toISOString() },
       });
-    return c.json({ allowance: await chatAllowanceState(match.id) });
+    return c.json({ allowance: await chatAllowanceState(match.id, deviceId) });
   })
   .get("/api/admin/generation-tier", async (c) => {
     if (!isHostAccount()) return c.json({ error: "This account has no host permission" }, 403);
@@ -2165,7 +2182,7 @@ const app = new Hono()
       match,
       // Oldest first: the room reads top to bottom.
       chat: chat.reverse().map(chatPayload),
-      chat_allowance: await chatAllowanceState(match.id),
+      chat_allowance: await chatAllowanceState(match.id, deviceIdOf(c)),
       chat_waiting: chat.filter((item) => !item.consumed_at).length,
       participants: rosterWithUrls,
       events,

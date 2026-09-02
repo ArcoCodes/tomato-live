@@ -8,6 +8,7 @@ import { LoginDialog } from "@/components/LoginDialog";
 import { Roster } from "@/components/Roster";
 import { useAuth } from "@/hooks/useAuth";
 import { useTailFrameHarvester } from "@/hooks/useTailFrameHarvester";
+import { deviceHeaders } from "@/lib/device";
 import { client } from "@/lib/edgespark";
 import type { BroadcastClip, LinkOffer, LiveData, PlayerControl } from "@/types/live";
 
@@ -95,7 +96,8 @@ function App() {
 
   const refresh = useCallback(async (quiet = false) => {
     try {
-      const response = await client.api.fetch("/api/public/live");
+      // The allowance on the payload is this browser's, so the id has to ride along.
+      const response = await client.api.fetch("/api/public/live", { headers: deviceHeaders });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "The live feed is unavailable");
       setLive(result);
@@ -348,7 +350,6 @@ function App() {
           waiting={live.chat_waiting ?? 0}
           allowance={live.chat_allowance ?? null}
           participants={live.participants}
-          isAuthenticated={isAuthenticated}
           onShowClip={(generationId) => {
             // A chat line's clip lives on whichever channel filmed it, so switch there first.
             const clip = live.clips.find((item) => item.id === generationId);
@@ -359,7 +360,6 @@ function App() {
             setActiveChannel(channelKeyFor(clip));
             setJumpRequest(generationId);
           }}
-          onRequireLogin={() => setLoginOpen(true)}
           onSent={() => void refresh(true)}
         />
       </main>

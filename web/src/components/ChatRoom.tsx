@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
+import { deviceHeaders } from "@/lib/device";
 import { client } from "@/lib/edgespark";
 import type { ChatAllowance, ChatMessage, ChatUnlock, Participant } from "@/types/live";
 
@@ -12,8 +13,6 @@ interface ChatRoomProps {
   allowance: ChatAllowance | null;
   /** Told which clip a message became, so the badge can take the viewer to it. */
   onShowClip: (generationId: number) => void;
-  isAuthenticated: boolean;
-  onRequireLogin: () => void;
   onSent: () => void;
 }
 
@@ -28,7 +27,7 @@ function renderBody(body: string, byName: Map<string, Participant>) {
   });
 }
 
-export function ChatRoom({ messages, participants, waiting, allowance, onShowClip, isAuthenticated, onRequireLogin, onSent }: ChatRoomProps) {
+export function ChatRoom({ messages, participants, waiting, allowance, onShowClip, onSent }: ChatRoomProps) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
@@ -88,16 +87,12 @@ export function ChatRoom({ messages, participants, waiting, allowance, onShowCli
   async function send() {
     const body = draft.trim();
     if (body.length < 2 || busy) return;
-    if (!isAuthenticated) {
-      onRequireLogin();
-      return;
-    }
     setBusy(true);
     setNotice("");
     try {
       const response = await client.api.fetch("/api/public/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...deviceHeaders },
         body: JSON.stringify({ body }),
       });
       const result = await response.json();
@@ -123,7 +118,7 @@ export function ChatRoom({ messages, participants, waiting, allowance, onShowCli
     try {
       const response = await client.api.fetch("/api/public/chat/unlock", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...deviceHeaders },
         body: JSON.stringify({ step: step.key }),
       });
       const result = await response.json();
@@ -196,14 +191,13 @@ export function ChatRoom({ messages, participants, waiting, allowance, onShowCli
             ref={inputRef}
             value={draft}
             maxLength={CHAT_MAX}
-            placeholder={isAuthenticated ? "Say something, or @name to cast" : "Sign in to chat"}
+            placeholder="Say something, or @name to cast"
             onChange={(event) => {
               setDraft(event.target.value);
               trackTrigger(event.target.value, event.target.selectionStart ?? event.target.value.length);
             }}
             onKeyUp={(event) => trackTrigger(event.currentTarget.value, event.currentTarget.selectionStart ?? 0)}
             onBlur={() => closePicker()}
-            onFocus={() => { if (!isAuthenticated) onRequireLogin(); }}
             onKeyDown={(event) => {
               if (trigger && hits.length) {
                 if (event.key === "ArrowDown") { event.preventDefault(); setPickIndex((i) => (i + 1) % hits.length); return; }
