@@ -53,12 +53,10 @@ export interface ChannelTab {
 }
 
 /** The two real stages of the pipeline, so the bar advances on fact rather than on a timer alone. */
-function GenerationProgress({ stage, compact }: { stage: "queued" | "keyframe" | "video"; compact: boolean }) {
+function GenerationProgress({ stage }: { stage: "queued" | "keyframe" | "video" }) {
   const writing = stage !== "video";
   return (
-    // With a clip already on screen the wording would contradict the picture, so only the rail
-    // stays — enough to say more is coming without covering what is playing.
-    <div className={compact ? "gen-progress is-compact" : "gen-progress"}>
+    <div className="gen-progress">
       <div className="gen-progress-rail">
         <i
           // Re-keyed per stage so the crawl restarts from the new stage's baseline.
@@ -70,12 +68,10 @@ function GenerationProgress({ stage, compact }: { stage: "queued" | "keyframe" |
           } as React.CSSProperties}
         />
       </div>
-      {compact ? null : (
-        <div className="gen-progress-copy">
-          <strong>{writing ? "正在锁定信号" : "画面回传中"}</strong>
-          <span>{writing ? "岛上的机位还在对准，马上就有画面" : "岛上画面正在传回，约 20 秒"}</span>
-        </div>
-      )}
+      <div className="gen-progress-copy">
+        <strong>{writing ? "正在锁定信号" : "画面回传中"}</strong>
+        <span>{writing ? "岛上的机位还在对准，马上就有画面" : "岛上画面正在传回，约 20 秒"}</span>
+      </div>
     </div>
   );
 }
@@ -502,7 +498,7 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
             </div>
           ) : null}
           <div className="scan-lines" />
-          {myPendingStage ? <GenerationProgress stage={myPendingStage} compact={playable.length > 0} /> : null}
+          {myPendingStage ? <GenerationProgress stage={myPendingStage} /> : null}
           {/* The timeline summary doubles as a caption, so the show reads even with the sound off. */}
           {clip?.summary && firstFrameShown ? (
             <div className="broadcast-subtitle">

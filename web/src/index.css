@@ -122,7 +122,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .broadcast-subtitle span { display: block; margin-bottom: 6px; font: 7px var(--utility); letter-spacing: .16em; color: #ff9670; font-weight: 600; }
 .broadcast-subtitle p { margin: 0; max-width: 780px; color: #fdfaf8; font-size: 13px; line-height: 1.65; text-shadow: 0 1px 5px rgba(0,0,0,.85); }
 .gen-progress { position: absolute; left: 0; right: 0; top: 0; z-index: 5; pointer-events: none; padding-bottom: 14px; background: linear-gradient(rgba(12,9,7,.82), transparent); }
-.gen-progress.is-compact { padding-bottom: 0; background: none; }
 .gen-progress-rail { height: 4px; background: rgba(255,255,255,.16); overflow: hidden; }
 .gen-progress-rail i { display: block; height: 100%; width: var(--from); border-radius: 0 var(--r-pill) var(--r-pill) 0; background: var(--brand); box-shadow: 0 0 12px rgba(230,75,34,.75); animation: gen-crawl var(--dur) cubic-bezier(.15,.75,.25,1) forwards; }
 .gen-progress-copy { display: flex; align-items: baseline; gap: 10px; padding: 11px 16px 0; }
@@ -134,7 +133,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .sound-toggle { position: absolute; right: 12px; top: 12px; z-index: 4; width: 32px; height: 32px; display: grid; place-items: center; border: 0; border-radius: 50%; background: rgba(255,255,255,.16); color: #fdfaf8; font-size: 13px; line-height: 1; cursor: pointer; backdrop-filter: blur(8px); transition: background .16s ease, transform .16s ease; }
 .sound-toggle:hover { background: rgba(255,255,255,.28); transform: scale(1.06); }
 .broadcast-frame:has(.gen-progress) .sound-toggle { top: 62px; }
-.broadcast-frame:has(.gen-progress.is-compact) .sound-toggle { top: 12px; }
 .sound-toggle.is-live { background: var(--brand); color: #fff; }
 .scan-lines { pointer-events: none; position: absolute; inset: 0; opacity: .08; background: repeating-linear-gradient(180deg, transparent 0 3px, rgba(0,0,0,.5) 4px); mix-blend-mode: multiply; }
 .channel-bar { flex: none; display: flex; gap: 6px; padding: 8px; overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--sh-1); }
