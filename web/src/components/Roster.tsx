@@ -1,4 +1,5 @@
-import type { CSSProperties } from "react";
+import { useState, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
 import type { Participant } from "@/types/live";
 
 const statusLabel = {
@@ -8,8 +9,18 @@ const statusLabel = {
   eliminated: "离场",
 };
 
+interface Hint {
+  name: string;
+  detail: string;
+  x: number;
+  y: number;
+}
+
 export function Roster({ participants, selectedId }: { participants: Participant[]; selectedId?: number }) {
   const alive = participants.filter((item) => item.status !== "eliminated").length;
+  // Portalled to the body: the panel scrolls, so a tooltip drawn inside it would be clipped by the
+  // first row it belongs to.
+  const [hint, setHint] = useState<Hint | null>(null);
 
   return (
     <aside className="roster-panel" aria-label="当前参赛者">
@@ -22,13 +33,22 @@ export function Roster({ participants, selectedId }: { participants: Participant
       </div>
 
       {/* Faces only: the cast keeps growing, and names would set the panel's floor width. */}
-      <div className="roster-list">
+      <div className="roster-list" onScroll={() => setHint(null)}>
         {participants.map((participant) => (
           <div
             className={`roster-face status-${participant.status}${selectedId === participant.id ? " is-you" : ""}`}
             key={participant.id}
             style={{ "--avatar-accent": participant.accent } as CSSProperties}
-            title={`${participant.display_name} · ${participant.archetype} · ${statusLabel[participant.status]}`}
+            onMouseEnter={(event) => {
+              const box = event.currentTarget.getBoundingClientRect();
+              setHint({
+                name: participant.display_name,
+                detail: `${participant.archetype} · ${statusLabel[participant.status]}`,
+                x: box.left + box.width / 2,
+                y: box.top,
+              });
+            }}
+            onMouseLeave={() => setHint(null)}
           >
             {participant.portrait_url
               ? <img src={participant.portrait_url} alt={participant.display_name} loading="lazy" />
@@ -36,6 +56,14 @@ export function Roster({ participants, selectedId }: { participants: Participant
           </div>
         ))}
       </div>
+
+      {hint && createPortal(
+        <div className="roster-hint" style={{ left: hint.x, top: hint.y }}>
+          <strong>{hint.name}</strong>
+          <span>{hint.detail}</span>
+        </div>,
+        document.body,
+      )}
     </aside>
   );
 }
