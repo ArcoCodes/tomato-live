@@ -1092,17 +1092,16 @@ function directorRequestFrom(data: JsonObject): GenerationRequest {
   };
 }
 
-async function createLiveGeneration(request: GenerationRequest, createdBy: string) {
+// Queueing is deliberately cheap: validate, write a `queued` row, return. All the slow work —
+// expanding the viewer's line into a shot design, writing the identity lock, submitting to MiniMax —
+// happens in startQueuedGeneration, so the viewer sees a live stage instead of waiting inside the
+// POST with nothing on screen. Video generation itself only takes ~20s and already has feedback.
+async function queueLiveGeneration(request: GenerationRequest, createdBy: string) {
   requireMiniMax();
   const participantIds = request.participantIds.filter(Number.isInteger).slice(0, 3);
-  const keyframePrompt = cleanText(request.keyframePrompt, 3500);
-  const videoPrompt = cleanText(request.videoPrompt, 3500);
-  const visualMemory = cleanText(request.visualMemory, 1000) || cleanText(videoPrompt, 1000);
-  if (participantIds.length === 0 || !keyframePrompt || !videoPrompt) {
-    throw new Error("请选择 1–3 名参赛者并确认完整的视频提示词");
-  }
+  if (participantIds.length === 0) throw new Error("请选择 1–3 名参赛者");
   const match = await ensureLiveMatch();
-  const selected = await db.select().from(participants).where(and(
+  const selected = await db.select({ id: participants.id }).from(participants).where(and(
     eq(participants.match_id, match.id),
     isNotNull(participants.character_draft_id),
     inArray(participants.id, participantIds),
@@ -1121,9 +1120,6 @@ async function createLiveGeneration(request: GenerationRequest, createdBy: strin
     throw Object.assign(error, { generation: slotError.generation });
   }
 
-  const previousClip = await latestChannelClip(match.id, request.channel, request.channelParticipantId);
-  const duration = clamp(request.duration || LIVE_VIDEO_DURATION_SECONDS, LIVE_VIDEO_DURATION_SECONDS, 15);
-
   const [generation] = await db.insert(generations).values({
     match_id: match.id,
     round: match.current_round,
@@ -1135,62 +1131,118 @@ async function createLiveGeneration(request: GenerationRequest, createdBy: strin
     source_generation_id: request.sourceGenerationId ?? null,
     prompt: JSON.stringify({
       promptVersion: LIVE_PROMPT_VERSION,
-      keyframePrompt,
-      videoPrompt,
-      visualMemory,
-      previousGenerationId: previousClip?.id ?? null,
+      awaitingPrompt: true,
+      // The director dialog supplies its own prompts; keep them so startQueuedGeneration
+      // does not overwrite them with the template.
+      ...(cleanText(request.keyframePrompt, 3500) ? { keyframePrompt: cleanText(request.keyframePrompt, 3500) } : {}),
+      ...(cleanText(request.videoPrompt, 3500) ? { videoPrompt: cleanText(request.videoPrompt, 3500) } : {}),
+      ...(cleanText(request.visualMemory, 1000) ? { visualMemory: cleanText(request.visualMemory, 1000) } : {}),
     }),
     participant_ids: JSON.stringify(participantIds),
-    duration_seconds: duration,
+    duration_seconds: clamp(request.duration || LIVE_VIDEO_DURATION_SECONDS, LIVE_VIDEO_DURATION_SECONDS, 15),
     created_by: createdBy,
   }).returning();
+  return generation;
+}
 
-  try {
-    const opening = await openingFrameFor(request, selected, match.id);
-    const identityLock = await identityLockLines(selected);
-    const taskPrompt = [
-      opening.source === "character_sheet"
-        ? "Starting from the supplied first frame, animate this survival challenge moment as one continuous take."
-        : "Starting from the supplied first frame, continue the exact same survival challenge moment as one continuous take.",
-      "The take is continuous but never static: the action escalates and the camera keeps moving and reframing throughout.",
-      opening.source === "character_sheet"
-        ? "The supplied frame is this contestant's official character sheet: keep the face, hair, body type and outfit identical to it."
-        : "Treat the supplied frame as the previous clip's final frame; preserve scene geometry, contestant positions, wardrobe, lighting, weather, camera style and color grade.",
-      opening.source === "character_sheet" ? cleanText(keyframePrompt, 800) : "",
-      identityLock,
-      cleanText(videoPrompt, 3500),
-      request.channel === "director" ? DIRECTOR_AUDIO_PROMPT : FIELD_AUDIO_PROMPT,
-      NO_SCREEN_TEXT_PROMPT,
-      "Avoid any hard cut to a different scene, any reset, new location, new people, face morphing, or sudden costume changes.",
-    ].filter(Boolean).join("\n");
+// Turns a queued row into a submitted MiniMax task. Runs from the sync endpoint, so its cost lands
+// on a poll the browser is making anyway rather than on the viewer's submit.
+async function startQueuedGeneration(generation: typeof generations.$inferSelect) {
+  const participantIds = parseParticipantIds(generation.participant_ids);
+  const selected = await db.select().from(participants)
+    .where(and(eq(participants.match_id, generation.match_id), inArray(participants.id, participantIds)));
+  if (selected.length === 0) throw new Error("参赛者列表已经变化，请刷新后重试");
 
-    const videoTask = await createMiniMaxVideoTask(taskPrompt, opening.url, duration);
-    // The prompt actually sent to MiniMax is persisted too, so a finished clip can be reproduced later.
-    const storedPrompt = JSON.stringify({
-      promptVersion: LIVE_PROMPT_VERSION,
-      keyframePrompt,
-      videoPrompt,
-      visualMemory,
-      taskPrompt,
-      openingFrameSource: opening.source,
-      previousGenerationId: previousClip?.id ?? null,
-    });
-    await db.update(generations).set({
-      stage: "video",
-      prompt: storedPrompt,
-      video_task_id: videoTask.id,
-    }).where(eq(generations.id, generation.id));
-    return {
-      generation: { ...generation, stage: "video" as const, prompt: storedPrompt, video_task_id: videoTask.id },
-      message: opening.source === "character_sheet"
-        ? "已用角色定妆图作为首帧，提交 MiniMax H3 Max 视频任务"
-        : "已用上一段尾帧作为首帧，提交 MiniMax H3 Max 续接视频",
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "MiniMax H3 Max 任务提交失败";
-    await db.update(generations).set({ stage: "failed", error_message: message }).where(eq(generations.id, generation.id));
-    throw new Error(message);
+  const lead = selected.find((item) => item.id === generation.channel_participant_id) ?? selected[0];
+  const guests = selected.filter((item) => item.id !== lead.id);
+
+  // A link continues from a clip this contestant was written into; its tail frame holds both people.
+  let openingFrameS3Uri: string | null = null;
+  if (generation.source_generation_id != null) {
+    const [source] = await db.select({ thumbnail_url: generations.thumbnail_url }).from(generations)
+      .where(eq(generations.id, generation.source_generation_id)).limit(1);
+    openingFrameS3Uri = source?.thumbnail_url ?? null;
   }
+
+  const latestClip = await latestChannelClip(
+    generation.match_id,
+    generation.channel,
+    generation.channel_participant_id,
+  );
+  const queuedPrompt = (() => {
+    try {
+      return asObject(JSON.parse(generation.prompt || "{}"));
+    } catch {
+      return {} as JsonObject;
+    }
+  })();
+  const suppliedVideoPrompt = cleanText(queuedPrompt.videoPrompt, 3500);
+  const prompts = suppliedVideoPrompt
+    ? {
+      keyframePrompt: cleanText(queuedPrompt.keyframePrompt, 3500),
+      videoPrompt: suppliedVideoPrompt,
+      visualMemory: cleanText(queuedPrompt.visualMemory, 1000),
+    }
+    : generation.channel === "director"
+    ? promptsForDirectorCut({
+      participant: lead,
+      sourceStory: storyTextFromGeneration(latestClip),
+      timeline: await recentVisualMemories(generation.match_id, 3),
+    })
+    : await promptsForViewerInput({
+      viewerPrompt: generation.viewer_prompt ?? "",
+      participant: lead,
+      guests,
+      latestClip,
+    });
+
+  const keyframePrompt = cleanText(prompts.keyframePrompt, 3500);
+  const videoPrompt = cleanText(prompts.videoPrompt, 3500);
+  const visualMemory = cleanText(prompts.visualMemory, 1000) || cleanText(videoPrompt, 1000);
+
+  const opening = await openingFrameFor({
+    channel: generation.channel,
+    channelParticipantId: generation.channel_participant_id,
+    participantIds,
+    keyframePrompt,
+    videoPrompt,
+    visualMemory,
+    duration: generation.duration_seconds,
+    openingFrameS3Uri,
+  }, selected, generation.match_id);
+  const identityLock = await identityLockLines(selected);
+
+  const taskPrompt = [
+    opening.source === "character_sheet"
+      ? "Starting from the supplied first frame, animate this survival challenge moment as one continuous take."
+      : "Starting from the supplied first frame, continue the exact same survival challenge moment as one continuous take.",
+    "The take is continuous but never static: the action escalates and the camera keeps moving and reframing throughout.",
+    opening.source === "character_sheet"
+      ? "The supplied frame is this contestant's official character sheet: keep the face, hair, body type and outfit identical to it."
+      : "Treat the supplied frame as the previous clip's final frame; preserve scene geometry, contestant positions, wardrobe, lighting, weather, camera style and color grade.",
+    opening.source === "character_sheet" ? cleanText(keyframePrompt, 800) : "",
+    identityLock,
+    cleanText(videoPrompt, 3500),
+    generation.channel === "director" ? DIRECTOR_AUDIO_PROMPT : FIELD_AUDIO_PROMPT,
+    NO_SCREEN_TEXT_PROMPT,
+    "Avoid any hard cut to a different scene, any reset, new location, new people, face morphing, or sudden costume changes.",
+  ].filter(Boolean).join("\n");
+
+  const videoTask = await createMiniMaxVideoTask(taskPrompt, opening.url, generation.duration_seconds);
+  // The prompt actually sent to MiniMax is persisted too, so a finished clip can be reproduced later.
+  const storedPrompt = JSON.stringify({
+    promptVersion: LIVE_PROMPT_VERSION,
+    keyframePrompt,
+    videoPrompt,
+    visualMemory,
+    taskPrompt,
+    openingFrameSource: opening.source,
+    previousGenerationId: latestClip?.id ?? null,
+  });
+  await db.update(generations)
+    .set({ stage: "video", prompt: storedPrompt, video_task_id: videoTask.id })
+    .where(eq(generations.id, generation.id));
+  return { ...generation, stage: "video" as const, prompt: storedPrompt, video_task_id: videoTask.id };
 }
 
 async function miniMaxVisionChat(system: string, text: string, imageUrl: string, maxTokens: number) {
@@ -1381,24 +1433,21 @@ async function maybeStartDirectorClip(matchId: number) {
     if (generationSlotError(active, "director", null)) return null;
     const source = await pickDirectorSource(matchId);
     if (!source?.channel_participant_id || !source.thumbnail_url) return null;
-    const [participant] = await db.select().from(participants)
+    const [participant] = await db.select({ id: participants.id }).from(participants)
       .where(eq(participants.id, source.channel_participant_id)).limit(1);
     if (!participant) return null;
-    const prompts = promptsForDirectorCut({
-      participant,
-      sourceStory: storyTextFromGeneration(source),
-      timeline: await recentVisualMemories(matchId, 3),
-    });
-    const result = await createLiveGeneration({
+    // Only queued here — the prompt work happens on a later sync, so the tail-frame upload that
+    // triggered this returns immediately.
+    return await queueLiveGeneration({
       channel: "director",
       channelParticipantId: null,
       participantIds: [participant.id],
       sourceGenerationId: source.id,
-      openingFrameS3Uri: source.thumbnail_url,
+      keyframePrompt: "",
+      videoPrompt: "",
+      visualMemory: "",
       duration: LIVE_VIDEO_DURATION_SECONDS,
-      ...prompts,
     }, "director:auto");
-    return result.generation;
   } catch {
     // A stalled director line must never break the request that fed it a tail frame.
     return null;
@@ -1418,30 +1467,6 @@ async function syncLiveGeneration(id: number) {
     throw error;
   }
   try {
-    if (generation.stage === "keyframe" && generation.keyframe_task_id) {
-      const keyframeTask = await getRenoiseTask(generation.keyframe_task_id);
-      const status = taskStatus(keyframeTask);
-      if (status === "failed") throw new Error("比赛关键帧生成失败");
-      if (status !== "completed") return { generation, providerStatus: status || "pending" };
-      const keyframeUrl = taskResultUrl(keyframeTask);
-      if (!keyframeUrl) throw new Error("关键帧任务完成但没有可用结果地址");
-      const imageResponse = await fetch(keyframeUrl);
-      if (!imageResponse.ok) throw new Error("无法下载比赛关键帧");
-      const materialId = await uploadRenoiseMaterial(
-        await imageResponse.arrayBuffer(),
-        `generation-${generation.id}-opening.png`,
-        imageResponse.headers.get("content-type") || "image/png",
-      );
-      const promptSet = asObject(JSON.parse(generation.prompt));
-      const videoTask = await submitH3VideoFromFrame(
-        materialId,
-        cleanText(promptSet.videoPrompt, 3500),
-        generation.duration_seconds,
-      );
-      await db.update(generations).set({ stage: "video", keyframe_material_id: materialId, video_task_id: videoTask.id })
-        .where(eq(generations.id, generation.id));
-      return { generation: { ...generation, stage: "video", video_task_id: videoTask.id }, providerStatus: "pending" };
-    }
     if (generation.stage === "video" && generation.video_task_id) {
       if (generation.model === LIVE_VIDEO_MODEL) {
         const videoTask = await getMiniMaxVideoTask(generation.video_task_id);
@@ -1479,10 +1504,24 @@ async function syncLiveGeneration(id: number) {
       return { generation: { ...generation, stage: "completed", result_url: await clipUrl(stableUrl) }, providerStatus: "completed" };
     }
     if (generation.stage === "queued") {
-      // A submit that died mid-request leaves a queued row nothing will ever advance; time it out.
+      // Claim the row first: two concurrent polls would otherwise both expand the prompt and submit
+      // two MiniMax tasks. "keyframe" is the claimed-and-writing state.
+      const claimed = await db.update(generations)
+        .set({ stage: "keyframe" })
+        .where(and(eq(generations.id, generation.id), eq(generations.stage, "queued")))
+        .returning({ id: generations.id });
+      if (claimed.length === 0) {
+        const [fresh] = await db.select().from(generations).where(eq(generations.id, id)).limit(1);
+        return { generation: fresh ?? generation, providerStatus: fresh?.stage ?? "keyframe" };
+      }
+      const started = await startQueuedGeneration({ ...generation, stage: "keyframe" });
+      return { generation: started, providerStatus: "pending" };
+    }
+    if (generation.stage === "keyframe") {
+      // Claimed but never submitted: the request that claimed it died. Do not strand it forever.
       const createdAt = Date.parse(`${generation.created_at.replace(" ", "T")}Z`);
-      if (Number.isFinite(createdAt) && Date.now() - createdAt > 120_000) {
-        throw new Error("任务提交中断，未能进入生成队列");
+      if (Number.isFinite(createdAt) && Date.now() - createdAt > 180_000) {
+        throw new Error("分镜编写中断，未能提交生成任务");
       }
     }
     return { generation, providerStatus: generation.stage };
@@ -1897,7 +1936,6 @@ const app = new Hono()
     // Opting to continue from a clip you were written into: that frame already holds both people in
     // one real composition, which no amount of identity-lock text can reproduce.
     const linkFromId = Number(data.linkFromGenerationId);
-    let linkedOpeningS3Uri: string | null = null;
     let linkedSourceId: number | null = null;
     if (Number.isInteger(linkFromId) && linkFromId > 0) {
       const [linked] = await db.select().from(generations).where(eq(generations.id, linkFromId)).limit(1);
@@ -1909,18 +1947,10 @@ const app = new Hono()
         && linkedIds.includes(participant.id)
         && linked.channel_participant_id !== participant.id;
       if (!usable) return c.json({ error: "这一段不能作为你的起始画面" }, 400);
-      linkedOpeningS3Uri = linked!.thumbnail_url;
       linkedSourceId = linked!.id;
     }
     // MiniMax takes at most 3 people, and the channel owner always holds one of those slots.
     const guests = mentionedParticipants(viewerPrompt, roster, participant.id).slice(0, 2);
-    const latestClip = await latestChannelClip(match.id, "participant", participant.id);
-    const { cue, keyframePrompt, videoPrompt, visualMemory } = await promptsForViewerInput({
-      viewerPrompt,
-      participant,
-      guests,
-      latestClip,
-    });
     await db.update(participants).set({
       last_action: viewerPrompt.slice(0, 40),
       stamina: clamp(participant.stamina - 9),
@@ -1948,24 +1978,22 @@ const app = new Hono()
         : `${viewerPrompt} 已进入 ${participant.display_name} 的视角通道。`,
     });
     try {
-      const result = await createLiveGeneration({
+      const generation = await queueLiveGeneration({
         channel: "participant",
         channelParticipantId: participant.id,
         participantIds: [participant.id, ...guests.map((item) => item.id)],
-        openingFrameS3Uri: linkedOpeningS3Uri,
         sourceGenerationId: linkedSourceId,
         viewerPrompt,
-        keyframePrompt,
-        videoPrompt,
-        visualMemory,
+        keyframePrompt: "",
+        videoPrompt: "",
+        visualMemory: "",
         duration: LIVE_VIDEO_DURATION_SECONDS,
       }, `participant:${participant.id}`);
       return c.json({
         ok: true,
-        message: result.message || "指令已生效，正在生成你的视角片段",
-        cue,
+        message: "指令已收到，正在编写分镜",
         guests: guests.map((item) => item.display_name),
-        generation: result.generation,
+        generation,
       }, 201);
     } catch (error) {
       const message = error instanceof Error ? error.message : "生成任务提交失败";
@@ -1985,8 +2013,8 @@ const app = new Hono()
       if (recent.length >= DIRECTOR_RATE_LIMIT_PER_HOUR) {
         return c.json({ error: `一小时内最多手动生成 ${DIRECTOR_RATE_LIMIT_PER_HOUR} 段，请稍后再试` }, 429);
       }
-      const result = await createLiveGeneration(directorRequestFrom(data), createdBy);
-      return c.json(result, 201);
+      const generation = await queueLiveGeneration(directorRequestFrom(data), createdBy);
+      return c.json({ generation, message: "已排队，正在编写分镜" }, 201);
     } catch (error) {
       const message = error instanceof Error ? error.message : "生成任务提交失败";
       return c.json({ error: message }, liveGenerationErrorStatus(error));
@@ -2034,8 +2062,8 @@ const app = new Hono()
     await requireDirector();
     try {
       const data = asObject(await c.req.json().catch(() => ({})));
-      const result = await createLiveGeneration(directorRequestFrom(data), auth.user!.id);
-      return c.json(result, 201);
+      const generation = await queueLiveGeneration(directorRequestFrom(data), auth.user!.id);
+      return c.json({ generation, message: "已排队，正在编写分镜" }, 201);
     } catch (error) {
       const message = error instanceof Error ? error.message : "生成任务提交失败";
       return c.json({ error: message }, liveGenerationErrorStatus(error));

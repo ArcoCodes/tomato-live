@@ -112,6 +112,11 @@ export function ActionBar({ participant, roster, myCharacters, onSwitchCharacter
       setDraft("");
       setLinkFrom(null);
       closePicker();
+      // The prompt work runs on the first sync, so kick it now rather than waiting up to 2.5s
+      // for the next poll tick.
+      if (result.generation?.id) {
+        void client.api.fetch(`/api/public/generations/${result.generation.id}/sync`, { method: "POST" });
+      }
       setNotice(result.guests?.length
         ? `${result.message || "指令已生效"}，联动 ${result.guests.join("、")}`
         : result.message || "指令已生效，正在生成你的视角片段");
@@ -150,8 +155,11 @@ export function ActionBar({ participant, roster, myCharacters, onSwitchCharacter
 
   const visibleChoices = choices.length ? choices : fallbackChoices;
   const hints = [mentionable.length ? "@ 拉人进画面" : "", linkOffers.length ? "/ 接续别人的画面" : ""].filter(Boolean);
+  const busyText = pendingGeneration?.stage === "video"
+    ? `正在生成 ${CLIP_SECONDS} 秒画面，很快就好…`
+    : "正在把你的指令扩写成分镜…";
   const statusText = notice
-    || (channelBusy ? `你的视角通道正在生成 ${CLIP_SECONDS} 秒片段…` : hints.length
+    || (channelBusy ? busyText : hints.length
       ? `写下你想让角色做什么，输入 ${hints.join("、")}`
       : "写下你想让角色做什么，会生成你自己的视角片段");
 
@@ -255,7 +263,7 @@ export function ActionBar({ participant, roster, myCharacters, onSwitchCharacter
             onKeyDown={handleKeyDown}
           />
           <button type="button" className="primary-action" disabled={locked || draft.trim().length < 2} onClick={() => void submit()}>
-            {busy ? "提交中" : channelBusy ? "生成中" : "生成这一段"}
+            {busy ? "提交中" : channelBusy ? (pendingGeneration?.stage === "video" ? "生成画面中" : "编写分镜中") : "生成这一段"}
           </button>
         </div>
         <p className="action-notice">{statusText}</p>

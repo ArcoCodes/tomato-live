@@ -44,6 +44,8 @@ export interface ChannelTab {
   label: string;
   detail: string;
   pending: boolean;
+  /** Which half of the pipeline it is in: writing the shot, or rendering it. */
+  pendingStage?: "queued" | "keyframe" | "video";
   /** The contestant's character sheet, or the director mascot. */
   avatarUrl: string | null;
   /** A transparent mascot rather than a photo, so it needs a backing tint. */
@@ -399,7 +401,7 @@ export function Broadcast({ clips, channels, activeChannel, onSelectChannel }: {
             </span>
             <span className="channel-copy">
               <strong>{item.label}</strong>
-              <small className={item.pending ? "is-pending" : ""}>{item.pending ? "生成中…" : item.detail}</small>
+              <small className={item.pending ? "is-pending" : ""}>{item.pending ? (item.pendingStage === "video" ? "生成画面中…" : "编写分镜中…") : item.detail}</small>
             </span>
           </button>
         ))}

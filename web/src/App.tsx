@@ -165,6 +165,7 @@ function App() {
       label: "总导播",
       detail: directorCount ? `${directorCount} 段串播` : "等待素材",
       pending: pending.some((item) => item.channel === "director"),
+      pendingStage: pending.find((item) => item.channel === "director")?.stage,
       avatarUrl: "/director.png",
       isMark: true,
     }];
@@ -175,6 +176,7 @@ function App() {
         label: participant.display_name,
         detail: count ? `${count} 段视角` : "尚无片段",
         pending: pending.some((item) => item.channel_participant_id === participant.id),
+        pendingStage: pending.find((item) => item.channel_participant_id === participant.id)?.stage,
         avatarUrl: participant.avatar_url,
       });
     }
