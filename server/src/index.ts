@@ -28,7 +28,9 @@ const CONTINUABLE_PROMPT_VERSIONS = new Set(["textless-v2", LIVE_PROMPT_VERSION]
 const MAX_CONCURRENT_GENERATIONS = 4;
 // The vote runs while the current clip plays; both candidates are generated during it, and the
 // loser is kept rather than deleted so it could later feed a parallel line.
-const VOTE_WINDOW_SECONDS = 10;
+// 14 rather than 10: a viewer only learns a fork opened on their next poll, so the window has to
+// cover that latency and still leave a usable 10 seconds to actually vote in.
+const VOTE_WINDOW_SECONDS = 14;
 const VIEWER_PROMPT_MAX_CHARS = 300;
 const TAIL_FRAME_MAX_BYTES = 4 * 1024 * 1024;
 const SUMMARY_MODEL = "MiniMax-M2";
@@ -712,7 +714,13 @@ function channelFilter(matchId: number, channel: "director" | "participant", par
 
 async function latestChannelClip(matchId: number, channel: "director" | "participant", participantId: number | null) {
   const [clip] = await db.select().from(generations)
-    .where(and(channelFilter(matchId, channel, participantId), eq(generations.stage, "completed")))
+    .where(and(
+      channelFilter(matchId, channel, participantId),
+      eq(generations.stage, "completed"),
+      // A losing candidate is not part of the line: it never airs and never gets a tail frame, so
+      // treating it as the latest clip would stall the channel permanently.
+      or(isNull(generations.vote_state), eq(generations.vote_state, "winner")),
+    ))
     .orderBy(desc(generations.id))
     .limit(1);
   return clip ?? null;

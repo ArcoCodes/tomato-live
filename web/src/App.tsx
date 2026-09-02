@@ -106,7 +106,9 @@ function App() {
 
   useEffect(() => {
     void refresh();
-    const timer = window.setInterval(() => void refresh(true), voteOpen ? 2000 : 9000);
+    // 5s idle rather than 9s: a fork is only open for a few seconds, and at 9s a viewer could miss it
+    // entirely before the faster in-vote rate ever kicks in.
+    const timer = window.setInterval(() => void refresh(true), voteOpen ? 2000 : 5000);
     return () => window.clearInterval(timer);
   }, [refresh, voteOpen]);
 
