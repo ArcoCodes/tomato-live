@@ -492,21 +492,25 @@ export function Broadcast({ clips, channels, activeChannel, onSelectChannel, myP
       </div>
 
       <div className="clip-history" aria-label="历史片段">
-        <div className="clip-history-heading">
-          <span>ARCHIVE</span>
-          <b>{history.length ? `${history.length} 段已生成` : "暂无历史片段"}</b>
-        </div>
         <div className="clip-history-track">
           {history.length ? history.map((item, index) => (
             <button
               key={item.id}
               className={item.id === (queuedClipId ?? currentClipId) ? "active" : ""}
+              title={item.summary ?? undefined}
               onClick={() => jumpToClip(item.id)}
             >
-              <span>{item.id === latestClipId ? "最新" : "回看"}</span>
-              {/* Position within this channel, not the database id — ids never restart. */}
-              <strong>SHOT {String(history.length - index).padStart(3, "0")}</strong>
-              <small>{item.duration_seconds}s · R{String(item.round).padStart(2, "0")}</small>
+              <span className="clip-thumb">
+                {item.thumbnail_url
+                  ? <img src={item.thumbnail_url} alt="" loading="lazy" />
+                  : <i />}
+                {item.id === latestClipId ? <em>最新</em> : null}
+              </span>
+              <span className="clip-meta">
+                {/* Position within this channel, not the database id — ids never restart. */}
+                <strong>SHOT {String(history.length - index).padStart(3, "0")}</strong>
+                <small>{item.duration_seconds}s</small>
+              </span>
             </button>
           )) : <p>生成第一段后，这里会出现可回看的历史视频。</p>}
         </div>

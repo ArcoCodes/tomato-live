@@ -48,6 +48,8 @@ export interface BroadcastClip {
   source_generation_id: number | null;
   summary: string | null;
   result_url: string | null;
+  /** Stable address for this clip's tail frame, usable as a poster. */
+  thumbnail_url: string | null;
   has_tail_frame: boolean;
   created_at: string;
 }

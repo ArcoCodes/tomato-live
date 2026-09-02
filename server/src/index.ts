@@ -1622,13 +1622,14 @@ const app = new Hono()
       // One stable address per clip. A presigned URL changes on every poll, and a changed <video> src
       // makes the browser drop the decoded picture and reload — the player would black out and restart.
       result_url: clip.result_url ? `/api/public/clips/${clip.id}/video` : null,
+      thumbnail_url: clip.thumbnail_url ? `/api/public/clips/${clip.id}/thumbnail` : null,
       has_tail_frame: Boolean(clip.thumbnail_url),
       created_at: clip.created_at,
     }));
     // Contestant clips whose tail frame nobody has captured yet. The browser harvests these, and a
     // landed frame is what advances the director line — EdgeSpark has no scheduler to do it.
     const tailFrameWanted = clips
-      .filter((clip) => clip.channel === "participant" && clip.result_url && !clip.thumbnail_url)
+      .filter((clip) => clip.result_url && !clip.thumbnail_url)
       .map((clip) => clip.id);
     const pendingList = pendingGenerations.map((item) => ({
       id: item.id,
@@ -1678,6 +1679,23 @@ const app = new Hono()
     // A completed clip never changes, so the browser can replay it straight from disk cache.
     headers.set("cache-control", "public, max-age=31536000, immutable");
     return new Response(upstream.body, { status: upstream.status, headers });
+  })
+  .get("/api/public/clips/:id/thumbnail", async (c) => {
+    const id = Number(c.req.param("id"));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ error: "无效的片段 ID" }, 400);
+    const [clip] = await db.select({ thumbnail_url: generations.thumbnail_url }).from(generations)
+      .where(eq(generations.id, id)).limit(1);
+    if (!clip?.thumbnail_url) return c.json({ error: "该片段还没有缩略图" }, 404);
+    const signed = await clipUrl(clip.thumbnail_url);
+    if (!signed) return c.json({ error: "缩略图地址暂不可用" }, 404);
+    const upstream = await fetch(signed);
+    if (upstream.status >= 400) return c.json({ error: "缩略图读取失败" }, 502);
+    const headers = new Headers();
+    headers.set("content-type", upstream.headers.get("content-type") || "image/jpeg");
+    const length = upstream.headers.get("content-length");
+    if (length) headers.set("content-length", length);
+    headers.set("cache-control", "public, max-age=31536000, immutable");
+    return new Response(upstream.body, { status: 200, headers });
   })
   .post("/api/public/clips/:id/tail-frame", async (c) => {
     const id = Number(c.req.param("id"));
