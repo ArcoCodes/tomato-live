@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `generations_director_source` ON `generations` (`source_generation_id`) WHERE channel = 'director' and source_generation_id is not null;

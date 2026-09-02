@@ -28,7 +28,12 @@ const ACCENTS = ["#e64b22", "#1d7874", "#b4530a", "#4a4e9c", "#a6273f"];
 const LIVE_PROMPT_VERSION = "channel-v3";
 // Older clips still carry usable visual memory, so they stay readable as continuity sources.
 const CONTINUABLE_PROMPT_VERSIONS = new Set(["textless-v2", LIVE_PROMPT_VERSION]);
-const MAX_CONCURRENT_GENERATIONS = 3;
+const MAX_CONCURRENT_GENERATIONS = 10;
+// The director cuts one clip per contestant clip, so its line has to run as wide as the cast does.
+// A contestant channel stays single-file — its clips chain tail frame to tail frame, and two at
+// once would fork the chain — but director cuts each start from a different contestant's frame and
+// have nothing to serialise on.
+const DIRECTOR_ACTIVE_SLOTS = 6;
 const VIEWER_PROMPT_MAX_CHARS = 300;
 const TAIL_FRAME_MAX_BYTES = 4 * 1024 * 1024;
 const SUMMARY_MODEL = "MiniMax-M2";
@@ -797,10 +802,17 @@ function generationSlotError(
   channel: "director" | "participant",
   participantId: number | null,
 ) {
-  const sameChannel = active.find((item) =>
-    item.channel === channel && (item.channel_participant_id ?? null) === participantId);
-  if (sameChannel) {
-    return { status: 409 as const, error: "这条通道上一段还在生成中，等它进入直播队列后再继续", generation: sameChannel };
+  if (channel === "director") {
+    const running = active.filter((item) => item.channel === "director");
+    if (running.length >= DIRECTOR_ACTIVE_SLOTS) {
+      return { status: 409 as const, error: "导播线同时生成的片段已达上限", generation: running[0] };
+    }
+  } else {
+    const sameChannel = active.find((item) =>
+      item.channel === channel && (item.channel_participant_id ?? null) === participantId);
+    if (sameChannel) {
+      return { status: 409 as const, error: "这条通道上一段还在生成中，等它进入直播队列后再继续", generation: sameChannel };
+    }
   }
   if (active.length >= MAX_CONCURRENT_GENERATIONS) {
     return { status: 429 as const, error: "同时生成的片段已达上限，稍后再试", generation: null };
@@ -1555,18 +1567,23 @@ async function pickDirectorSource(matchId: number) {
 // ordinary contestant channels — same identity anchoring, same tail-frame chain — which is what lets
 // the director cut to them exactly as it cuts to a viewer's contestant, and what keeps the broadcast
 // moving when no viewer has asked for anything.
-const HOUSE_CAST_ACTIVE_SLOTS = 2;
-// Guardrails on a loop that would otherwise run for as long as one browser tab stays open.
-const HOUSE_CAST_MIN_GAP_SECONDS = 20;
-const HOUSE_CAST_MAX_CLIPS = 120;
+// One in flight per contestant. Their four clips are the 40 seconds of airtime that covers the ~25s
+// it takes to make the next one, which is only true if all four are actually running at once.
+const HOUSE_CAST_ACTIVE_SLOTS = 4;
+// Just wide enough to keep two concurrent heartbeats from queueing the same beat twice; the real
+// limiter is the slot count above, not a timer.
+const HOUSE_CAST_MIN_GAP_SECONDS = 4;
+// A ceiling on a loop that runs for as long as one browser tab stays open. ~100 minutes of footage.
+const HOUSE_CAST_MAX_CLIPS = 600;
 const HOUSE_CAST_CUE = "Take the next concrete step in your own plan on this island, and run into a new complication while doing it.";
 
 async function maybeAdvanceHouseCast(matchId: number) {
   try {
     requireMiniMax();
     const active = await activeGenerations(matchId);
-    // Leave the rest of the queue for viewers: the house cast never fills it.
-    if (active.length >= HOUSE_CAST_ACTIVE_SLOTS) return null;
+    if (active.length >= MAX_CONCURRENT_GENERATIONS) return null;
+    const houseActive = active.filter((item) => item.created_by.startsWith("house:")).length;
+    if (houseActive >= HOUSE_CAST_ACTIVE_SLOTS) return null;
 
     const [tally] = await db.select({
       total: sql<number>`count(*)`,
@@ -1736,7 +1753,10 @@ const app = new Hono()
   .get("/api/public/health", (c) => c.json({ ok: true, service: "tomato-live" }))
   .get("/api/public/live", async (c) => {
     const match = await ensureLiveMatch();
-    // There is no scheduler here, so the house cast advances on the back of the viewer heartbeat.
+    // There is no scheduler here, so both lines advance on the back of the viewer heartbeat. The
+    // director used to move only when a contestant clip finished, so a beat it had to skip because
+    // it was busy never came round again and the main channel simply stopped.
+    await maybeStartDirectorClip(match.id);
     await maybeAdvanceHouseCast(match.id);
     const [roster, allEvents, clips, pendingGenerations] = await Promise.all([
       db.select().from(participants)

@@ -177,4 +177,8 @@ export const generations = sqliteTable("generations", {
   index("generations_match_idx").on(table.match_id),
   index("generations_stage_idx").on(table.stage),
   index("generations_channel_idx").on(table.match_id, table.channel, table.channel_participant_id, table.id),
+  // Director cuts run concurrently now, and two of them racing on the same contestant clip would
+  // air the same beat twice. The read-then-write guard in pickDirectorSource already lost that race
+  // once, so the constraint lives here.
+  uniqueIndex("generations_director_source").on(table.source_generation_id).where(sql`channel = 'director' and source_generation_id is not null`),
 ]);
