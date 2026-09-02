@@ -1655,7 +1655,7 @@ const CHAT_UNLOCKS = [
     grant: 2,
     title: "关注 Renoise 的 X 账号",
     detail: "点下面的按钮去关注，马上多 2 次发言机会。",
-    url: "https://x.com/renoise_ai",
+    url: "https://x.com/renoiseai",
     cta: "前往关注",
   },
   {
@@ -1663,7 +1663,7 @@ const CHAT_UNLOCKS = [
     grant: 4,
     title: "关注 Renoise Jp 的 X 账号",
     detail: "日本官方账号，去关注一下，再多 4 次发言机会。",
-    url: "https://x.com/renoise_jp",
+    url: "https://x.com/renoiseaijp",
     cta: "前往关注",
   },
   {
@@ -1671,7 +1671,7 @@ const CHAT_UNLOCKS = [
     grant: 5,
     title: "注册 Renoise 账号",
     detail: "去注册一个 Renoise 账号，最后再多 5 次发言机会。",
-    url: "https://renoise.ai",
+    url: "https://renoise.ai/?utm_medium=renoiselive&utm_source=tomato-renoise-live",
     cta: "前往注册",
   },
 ];
