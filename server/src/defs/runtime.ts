@@ -8,8 +8,7 @@ export type VarKey =
   | "FAL_VISION_MODEL"
   | "RENOISE_API_BASE_URL"
   | "RENOISE_PROXY_TOKEN"
-  | "HOST_USER_EMAIL"
-  | "PUBLIC_MEDIA_BASE_URL";
+  | "HOST_USER_EMAIL";
 
 export type SecretKey =
   | "FAL_KEY"
