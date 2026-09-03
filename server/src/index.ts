@@ -1,8 +1,8 @@
 import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { Hono } from "hono";
-import { db, secret, storage, vars } from "edgespark";
+import { ctx, db, secret, storage, vars } from "edgespark";
 import { auth } from "edgespark/http";
-import { buckets, characterDrafts, chatMessages, generations, matchEvents, matches, participants, viewerPerks, viewerPresence } from "@defs";
+import { buckets, characterDrafts, chatMessages, generations, matchEvents, matches, participants, runtimeLeases, viewerPerks, viewerPresence } from "@defs";
 
 const LIVE_SLUG = "island-zero";
 const RENOISE_DEFAULT_BASE_URL = "https://www.renoise.ai/api/public/v1";
@@ -219,11 +219,40 @@ function md5Hex(buffer: ArrayBuffer) {
   )).join("");
 }
 
-// How often the show is allowed to advance itself, per isolate. Short enough that the broadcast
+// How often the show is allowed to advance itself, fleet-wide. Short enough that the broadcast
 // still feels immediate, long enough that a hundred watching browsers cost about what one does.
 const ADVANCE_MIN_INTERVAL_MS = 4000;
+// The in-memory half of the gate. It cannot bound the interval — every isolate has its own copy —
+// so it exists only to keep most heartbeats from spending a D1 round trip on the lease query.
+// Shorter than the lease so an isolate is still awake when the window actually reopens.
+const ADVANCE_SOFT_INTERVAL_MS = 2000;
 let lastAdvanceAt = 0;
-class SkipAdvance extends Error {}
+
+// Global mutual exclusion on D1: at most one request holds `key` at a time, fleet-wide. Both
+// statements decide the winner inside the database — a read-then-write would hand the lease to
+// every viewer whose heartbeat landed in the same moment, which is the problem it exists to solve.
+// The holder may retake its own lease, so a viewer keeps work it has already started.
+async function claimLease(key: string, ttlMs: number, holder: string): Promise<boolean> {
+  const now = Date.now();
+  try {
+    const taken = await db.update(runtimeLeases)
+      .set({ holder, until_ms: now + ttlMs })
+      .where(and(
+        eq(runtimeLeases.key, key),
+        or(lt(runtimeLeases.until_ms, now), eq(runtimeLeases.holder, holder)),
+      ))
+      .returning({ key: runtimeLeases.key });
+    if (taken.length > 0) return true;
+    const created = await db.insert(runtimeLeases)
+      .values({ key, holder, until_ms: now + ttlMs })
+      .onConflictDoNothing({ target: runtimeLeases.key })
+      .returning({ key: runtimeLeases.key });
+    return created.length > 0;
+  } catch {
+    // A lease that cannot be read is not a lease anyone holds: skip the work, never break the page.
+    return false;
+  }
+}
 
 async function ensureLiveMatch() {
   await db.insert(matches).values({
@@ -1919,6 +1948,33 @@ async function markWatching(matchId: number, deviceId: string) {
     .catch(() => undefined);
 }
 
+// Presence is per browser, so it is the one part of the heartbeat that cannot ride the advance
+// lease: a single winner marking itself watching every four seconds would leave the counter reading
+// one, and nobody but that winner would ever get an arrival row. Refreshed at two thirds of the
+// presence window — the widest spacing that still keeps a steadily-polling viewer inside the
+// window — and remembered per isolate, so most heartbeats cost no write at all. The memo has to
+// out-size the audience an isolate actually sees: once it starts evicting live entries, every
+// evicted viewer's next heartbeat writes again and the cap has bought nothing.
+const PRESENCE_REFRESH_MS = (VIEWER_PRESENCE_WINDOW_SECONDS * 2 / 3) * 1000;
+const PRESENCE_MEMO_MAX = 20000;
+const presenceMemo = new Map<string, number>();
+
+function presenceDue(deviceId: string) {
+  const now = Date.now();
+  const seen = presenceMemo.get(deviceId);
+  if (seen != null && now - seen < PRESENCE_REFRESH_MS) return false;
+  // Insertion order is eviction order. A cold isolate rebuilds this from nothing, so it only has to
+  // stay bounded — dropping a live viewer's entry just costs one extra write.
+  if (presenceMemo.size >= PRESENCE_MEMO_MAX) {
+    for (const key of presenceMemo.keys()) {
+      presenceMemo.delete(key);
+      if (presenceMemo.size < PRESENCE_MEMO_MAX * 0.8) break;
+    }
+  }
+  presenceMemo.set(deviceId, now);
+  return true;
+}
+
 // A synthetic crowd sitting under the real one, so the counter reads like a broadcast rather than
 // like an empty room. Derived from the clock, not from random: every viewer sees the same figure at
 // the same moment, and it drifts smoothly instead of jumping between heartbeats. Set to 0 to show
@@ -1928,7 +1984,10 @@ const SYNTHETIC_AUDIENCE_SWING = 780;
 
 function syntheticAudience(now = Date.now()) {
   if (SYNTHETIC_AUDIENCE_CENTRE <= 0) return 0;
-  const t = now / 1000;
+  // Stepped to 30-second buckets: the figure still drifts over minutes, but within a bucket every
+  // heartbeat reads the same value — which is what lets an otherwise-unchanged /live payload keep
+  // its ETag and answer with a 304 instead of a fresh body.
+  const t = Math.floor(now / 30000) * 30;
   // Two periods that do not divide into each other, so the curve never looks like a loop: a tide
   // over ~90 minutes and a ripple over ~13.
   const tide = Math.sin((t / 5400) * Math.PI * 2);
@@ -2852,6 +2911,150 @@ function liveGenerationErrorStatus(error: unknown) {
   return 502;
 }
 
+type LiveMatchRow = Awaited<ReturnType<typeof ensureLiveMatch>>;
+
+// Everything in the live payload that is the same for every viewer. Roster presigns, the clip
+// window, the chat tail and the story choices cost the same whether one browser asks or a hundred
+// do, so they are built once per isolate per LIVE_SHARED_TTL_MS and handed out unchanged. Only
+// chat_allowance (per device) and tail_frame_wanted (per election) are left out of it.
+async function buildLiveShared(match: LiveMatchRow) {
+  const [roster, allEvents, clips, pendingGenerations] = await Promise.all([
+    db.select().from(participants)
+      .where(and(
+        eq(participants.match_id, match.id),
+        or(isNotNull(participants.character_draft_id), eq(participants.is_system, true)),
+      ))
+      // A fixed running order, not score. Ranking them meant the cast reshuffled itself
+      // mid-broadcast every time someone acted, and a viewer looking for one contestant had to
+      // find them again. This is the order the channel strip shows.
+      .orderBy(participants.display_order, participants.id),
+    db.select().from(matchEvents).where(eq(matchEvents.match_id, match.id)).orderBy(desc(matchEvents.id)).limit(50),
+    db.select(CLIP_PAYLOAD_COLUMNS).from(generations)
+      .where(and(eq(generations.match_id, match.id), eq(generations.stage, "completed")))
+      .orderBy(desc(generations.id)).limit(60),
+    db.select(CLIP_PAYLOAD_COLUMNS).from(generations)
+      .where(and(eq(generations.match_id, match.id), inArray(generations.stage, ["queued", "keyframe", "video"])))
+      .orderBy(desc(generations.id)),
+  ]);
+  const visibleParticipantIds = new Set(roster.map((participant) => participant.id));
+  const events = allEvents
+    .filter((event) => event.participant_id == null || visibleParticipantIds.has(event.participant_id))
+    .slice(0, 20);
+  const storyChoices = buildStoryChoices(match, roster, events, clips[0] ?? null);
+  const rosterWithUrls = await Promise.all(roster.map(async (participant) => ({
+    ...participant,
+    avatar_url: await avatarUrl(participant.avatar_s3_uri),
+    // Falls back to the sheet so a viewer-made contestant, which has no separate portrait, still
+    // shows a face everywhere the cast is displayed.
+    portrait_url: await avatarUrl(participant.portrait_s3_uri ?? participant.avatar_s3_uri),
+    control_token_hash: undefined,
+  })));
+  // Chat keeps a longer memory than the clip window does, so a line filmed a while back would
+  // point at a clip the page no longer has and its "Watch it" button would go nowhere. Pull those back in.
+  const chat = await db.select().from(chatMessages)
+    .where(eq(chatMessages.match_id, match.id))
+    .orderBy(desc(chatMessages.id))
+    .limit(40);
+  const haveClipIds = new Set(clips.map((clip) => clip.id));
+  const missingClipIds = [...new Set(chat
+    .map((item) => item.generation_id)
+    .filter((id): id is number => id != null && !haveClipIds.has(id)))];
+  const referencedClips = missingClipIds.length
+    ? await db.select(CLIP_PAYLOAD_COLUMNS).from(generations).where(and(
+      eq(generations.match_id, match.id),
+      eq(generations.stage, "completed"),
+      inArray(generations.id, missingClipIds),
+    ))
+    : [];
+  const clipList = [...clips, ...referencedClips].map((clip) => ({
+    id: clip.id,
+    round: clip.round,
+    duration_seconds: clip.duration_seconds,
+    channel: clip.channel,
+    channel_participant_id: clip.channel_participant_id,
+    participant_ids: parseParticipantIds(clip.participant_ids),
+    source_generation_id: clip.source_generation_id,
+    summary: clip.summary,
+    // One stable address per clip. A presigned URL changes on every poll, and a changed <video> src
+    // makes the browser drop the decoded picture and reload — the player would black out and restart.
+    result_url: clip.result_url ? `/api/public/clips/${clip.id}/video` : null,
+    thumbnail_url: clip.thumbnail_url ? `/api/public/clips/${clip.id}/thumbnail` : null,
+    has_tail_frame: Boolean(clip.thumbnail_url),
+    created_at: clip.created_at,
+  }));
+  const pendingList = pendingGenerations.map((item) => ({
+    id: item.id,
+    stage: item.stage,
+    channel: item.channel,
+    channel_participant_id: item.channel_participant_id,
+    duration_seconds: item.duration_seconds,
+    created_at: item.created_at,
+  }));
+  return {
+    shared: {
+      match: { ...match, viewers: await countWatching(match.id) },
+      // Oldest first: the room reads top to bottom.
+      chat: chat.reverse().map(chatPayload),
+      // What is actually queued to film, which is now people's lines only.
+      chat_waiting: chat.filter((item) => !item.consumed_at && item.priority >= CHAT_PRIORITY_VIEWER).length,
+      participants: rosterWithUrls,
+      events,
+      clips: clipList,
+      story_choices: storyChoices,
+      pending_generation: pendingList[0] ?? null,
+      pending_generations: pendingList,
+    },
+    // Contestant clips whose tail frame nobody has captured yet. Only the advance winner turns
+    // these into an election, so the list stops here.
+    tailFrameCandidates: clips.filter((clip) => clip.result_url && !clip.thumbnail_url).map((clip) => clip.id),
+  };
+}
+
+// `caches.default` is a Workers runtime global the SDK typings do not describe. Reached
+// defensively: where it is missing, every request goes to R2 exactly as it did before.
+type EdgeCache = { match(req: Request): Promise<Response | undefined>; put(req: Request, res: Response): Promise<void> };
+const edgeCache: EdgeCache | undefined = (globalThis as { caches?: { default?: EdgeCache } }).caches?.default;
+// Past this a clip is cheaper to stream from R2 than to hold a copy of at every PoP.
+const EDGE_FILL_MAX_BYTES = 100 * 1024 * 1024;
+// One fill per clip per isolate. Fifty viewers arriving at a cold PoP together would otherwise each
+// pull the whole clip down to warm the same cache entry.
+const edgeFillInFlight = new Set<number>();
+
+// The client's own response is usually a 206, and the Cache API refuses to store one, so the entry
+// is filled by a second range-less fetch. Everything here is best-effort: a clip that fails to
+// cache is a clip served from R2 again next time.
+async function fillEdgeCache(id: number, url: string, signed: string) {
+  try {
+    const cache = edgeCache;
+    if (!cache) return;
+    const upstream = await fetch(signed);
+    if (upstream.status !== 200) return;
+    const length = Number(upstream.headers.get("content-length") ?? 0);
+    if (length > EDGE_FILL_MAX_BYTES) return;
+    const headers = new Headers();
+    headers.set("content-type", upstream.headers.get("content-type") || "video/mp4");
+    if (length) headers.set("content-length", String(length));
+    headers.set("accept-ranges", "bytes");
+    headers.set("cache-control", "public, max-age=31536000, immutable");
+    await cache.put(new Request(url), new Response(upstream.body, { status: 200, headers }));
+  } catch {
+    // Nothing to report: the next viewer simply reads from R2.
+  } finally {
+    edgeFillInFlight.delete(id);
+  }
+}
+
+const LIVE_SHARED_TTL_MS = 2500;
+let liveSharedCache: { at: number; match: LiveMatchRow; shared: Awaited<ReturnType<typeof buildLiveShared>>["shared"] } | null = null;
+
+// How long an elected viewer is trusted to land a tail frame before the clip goes back up for
+// election. Long enough to download and decode a ten-second clip on a phone.
+const TAIL_LEASE_TTL_MS = 45_000;
+// Elections cost a write each and run on one request. A healthy show has one or two clips waiting;
+// a wide backlog is capped so a single heartbeat cannot spend its whole subrequest budget here.
+// Harvested clips leave the list, so the cap walks through the backlog over successive ticks.
+const TAIL_ELECTIONS_PER_TICK = 6;
+
 const app = new Hono()
   .get("/api/public/health", (c) => c.json({ ok: true, service: "tomato-live" }))
   .post("/api/public/chat", async (c) => {
@@ -2902,6 +3105,9 @@ const app = new Hono()
     // cheap — the prompt work happens later, on the sync poll — so this costs the poster almost
     // nothing and is the difference between a live room and a suggestion box.
     const filming = await maybeAdvanceHouseCast(match).catch(() => null);
+    // The sender refreshes the moment this returns and has to see their own line, so the shared
+    // payload goes stale here rather than waiting out its clock.
+    liveSharedCache = null;
     return c.json({
       message: chatPayload(row),
       mentions,
@@ -3030,131 +3236,118 @@ const app = new Hono()
     return c.json({ current: key, message: `Switched to ${GENERATION_TIERS[key].label}; clips already rendering will finish first` });
   })
   .get("/api/public/live", async (c) => {
-    const match = await ensureLiveMatch();
+    const deviceId = deviceIdOf(c);
     // There is no scheduler here, so the show advances on the back of the viewer heartbeat — but it
     // only has to advance once, not once per watching browser. Every viewer running the full seed /
-    // reap / story / director / cast pass every nine seconds multiplied the database load by the
-    // size of the audience, which is what put it over the edge. The gap checks inside each step
-    // already decide whether anything happens; this just stops paying to ask.
-    const sinceAdvance = Date.now() - lastAdvanceAt;
-    let current = match;
-    try {
-      if (sinceAdvance < ADVANCE_MIN_INTERVAL_MS) throw new SkipAdvance();
+    // reap / story / director / cast pass multiplied the database load by the size of the audience,
+    // which is what put it over the edge. The clock below is per isolate and so bounds nothing on
+    // its own — a hundred browsers spread over a dozen PoPs each got their own copy of it. It is
+    // here only to keep most heartbeats off the lease query; the lease is what makes "once every
+    // four seconds" true for the whole fleet.
+    let winner: Awaited<ReturnType<typeof buildLiveShared>> | null = null;
+    let winnerMatch: LiveMatchRow | null = null;
+    if (Date.now() - lastAdvanceAt >= ADVANCE_SOFT_INTERVAL_MS) {
       lastAdvanceAt = Date.now();
-      await markWatching(match.id, deviceIdOf(c));
-      await maybeSeedChat(match);
-      // Before anything asks for a slot, give back the ones nothing is using any more.
-      await reapStalledGenerations(match.id);
-      const turned = await advanceStory(match);
-      if (turned) current = await ensureLiveMatch();
-      // The director line is normally chained off a tail frame landing. If every slot happened to be
-      // busy at that exact moment the cut was simply lost, with nothing to retry it — which is how
-      // it went an hour without filming. Giving it first refusal on each tick is that retry.
-      await maybeStartDirectorClip(current);
-      await maybeAdvanceHouseCast(current);
-    } catch (error) {
-      if (!(error instanceof SkipAdvance)) {
-        console.error("[heartbeat] advance failed", error instanceof Error ? error.message : String(error));
+      // A fresh holder per attempt: the lease's own-holder renewal clause exists for tail-frame
+      // elections, where the same device must keep its claim across ticks. Reusing one holder id
+      // here would let this isolate retake "advance" before it expires and beat the 4s cadence.
+      if (await claimLease("advance", ADVANCE_MIN_INTERVAL_MS, crypto.randomUUID())) {
+        let current = await ensureLiveMatch();
+        try {
+          await maybeSeedChat(current);
+          // Before anything asks for a slot, give back the ones nothing is using any more.
+          await reapStalledGenerations(current.id);
+          const turned = await advanceStory(current);
+          if (turned) current = await ensureLiveMatch();
+          // The director line is normally chained off a tail frame landing. If every slot happened to be
+          // busy at that exact moment the cut was simply lost, with nothing to retry it — which is how
+          // it went an hour without filming. Giving it first refusal on each tick is that retry.
+          await maybeStartDirectorClip(current);
+          await maybeAdvanceHouseCast(current);
+          // The pipeline used to move only because every viewer polled every pending clip. Now that
+          // a viewer drives only what it owns, a clip whose author closed the tab would sit at
+          // 'queued' with nobody to ask about it. One per tick, oldest first: the show keeps
+          // rendering with nobody watching, and upstream sees a fixed rate rather than one request
+          // per viewer per clip. Backgrounded, because a provider round trip and a video copy must
+          // never be on the critical path of a heartbeat.
+          const [stranded] = await db.select({ id: generations.id }).from(generations)
+            .where(and(
+              eq(generations.match_id, current.id),
+              inArray(generations.stage, ["queued", "video"]),
+            ))
+            .orderBy(generations.id).limit(1);
+          if (stranded) ctx.runInBackground(syncLiveGeneration(stranded.id).catch(() => undefined));
+        } catch (error) {
+          console.error("[heartbeat] advance failed", error instanceof Error ? error.message : String(error));
+        }
+        // The winner builds rather than reads: the pass it just ran is what changed the clips its
+        // own tail elections are about to be held over.
+        winner = await buildLiveShared(current);
+        winnerMatch = current;
+        liveSharedCache = { at: Date.now(), match: current, shared: winner.shared };
       }
     }
-    const [roster, allEvents, clips, pendingGenerations] = await Promise.all([
-      db.select().from(participants)
-        .where(and(
-          eq(participants.match_id, match.id),
-          or(isNotNull(participants.character_draft_id), eq(participants.is_system, true)),
-        ))
-        // A fixed running order, not score. Ranking them meant the cast reshuffled itself
-        // mid-broadcast every time someone acted, and a viewer looking for one contestant had to
-        // find them again. This is the order the channel strip shows.
-        .orderBy(participants.display_order, participants.id),
-      db.select().from(matchEvents).where(eq(matchEvents.match_id, match.id)).orderBy(desc(matchEvents.id)).limit(50),
-      db.select(CLIP_PAYLOAD_COLUMNS).from(generations)
-        .where(and(eq(generations.match_id, match.id), eq(generations.stage, "completed")))
-        .orderBy(desc(generations.id)).limit(60),
-      db.select(CLIP_PAYLOAD_COLUMNS).from(generations)
-        .where(and(eq(generations.match_id, match.id), inArray(generations.stage, ["queued", "keyframe", "video"])))
-        .orderBy(desc(generations.id)),
-    ]);
-    const visibleParticipantIds = new Set(roster.map((participant) => participant.id));
-    const events = allEvents
-      .filter((event) => event.participant_id == null || visibleParticipantIds.has(event.participant_id))
-      .slice(0, 20);
-    const storyChoices = buildStoryChoices(match, roster, events, clips[0] ?? null);
-    const rosterWithUrls = await Promise.all(roster.map(async (participant) => ({
-      ...participant,
-      avatar_url: await avatarUrl(participant.avatar_s3_uri),
-      // Falls back to the sheet so a viewer-made contestant, which has no separate portrait, still
-      // shows a face everywhere the cast is displayed.
-      portrait_url: await avatarUrl(participant.portrait_s3_uri ?? participant.avatar_s3_uri),
-      control_token_hash: undefined,
-    })));
-    // Chat keeps a longer memory than the clip window does, so a line filmed a while back would
-    // point at a clip the page no longer has and its "Watch it" button would go nowhere. Pull those back in.
-    const chat = await db.select().from(chatMessages)
-      .where(eq(chatMessages.match_id, match.id))
-      .orderBy(desc(chatMessages.id))
-      .limit(40);
-    const haveClipIds = new Set(clips.map((clip) => clip.id));
-    const missingClipIds = [...new Set(chat
-      .map((item) => item.generation_id)
-      .filter((id): id is number => id != null && !haveClipIds.has(id)))];
-    const referencedClips = missingClipIds.length
-      ? await db.select(CLIP_PAYLOAD_COLUMNS).from(generations).where(and(
-        eq(generations.match_id, match.id),
-        eq(generations.stage, "completed"),
-        inArray(generations.id, missingClipIds),
-      ))
-      : [];
-    const clipList = [...clips, ...referencedClips].map((clip) => ({
-      id: clip.id,
-      round: clip.round,
-      duration_seconds: clip.duration_seconds,
-      channel: clip.channel,
-      channel_participant_id: clip.channel_participant_id,
-      participant_ids: parseParticipantIds(clip.participant_ids),
-      source_generation_id: clip.source_generation_id,
-      summary: clip.summary,
-      // One stable address per clip. A presigned URL changes on every poll, and a changed <video> src
-      // makes the browser drop the decoded picture and reload — the player would black out and restart.
-      result_url: clip.result_url ? `/api/public/clips/${clip.id}/video` : null,
-      thumbnail_url: clip.thumbnail_url ? `/api/public/clips/${clip.id}/thumbnail` : null,
-      has_tail_frame: Boolean(clip.thumbnail_url),
-      created_at: clip.created_at,
-    }));
-    // Contestant clips whose tail frame nobody has captured yet. The browser harvests these, and a
-    // landed frame is what advances the director line — EdgeSpark has no scheduler to do it.
-    const tailFrameWanted = clips
-      .filter((clip) => clip.result_url && !clip.thumbnail_url)
-      .map((clip) => clip.id);
-    const pendingList = pendingGenerations.map((item) => ({
-      id: item.id,
-      stage: item.stage,
-      channel: item.channel,
-      channel_participant_id: item.channel_participant_id,
-      duration_seconds: item.duration_seconds,
-      created_at: item.created_at,
-    }));
-    const pendingGeneration = pendingList[0] ?? null;
-    return c.json({
-      match: { ...match, viewers: await countWatching(match.id) },
-      // Oldest first: the room reads top to bottom.
-      chat: chat.reverse().map(chatPayload),
-      chat_allowance: await chatAllowanceState(match.id, deviceIdOf(c)),
-      // What is actually queued to film, which is now people's lines only.
-      chat_waiting: chat.filter((item) => !item.consumed_at && item.priority >= CHAT_PRIORITY_VIEWER).length,
-      participants: rosterWithUrls,
-      events,
-      clips: clipList,
-      story_choices: storyChoices,
-      pending_generation: pendingGeneration,
-      pending_generations: pendingList,
+    let match: LiveMatchRow;
+    let shared: Awaited<ReturnType<typeof buildLiveShared>>["shared"];
+    let tailFrameCandidates: number[] = [];
+    if (winner && winnerMatch) {
+      match = winnerMatch;
+      shared = winner.shared;
+      tailFrameCandidates = winner.tailFrameCandidates;
+    } else {
+      const hit = liveSharedCache && Date.now() - liveSharedCache.at < LIVE_SHARED_TTL_MS ? liveSharedCache : null;
+      if (hit) {
+        // The match row rides along in the cache so a served-from-memory heartbeat skips
+        // ensureLiveMatch as well — its upsert already ran on whichever request built this.
+        match = hit.match;
+        shared = hit.shared;
+      } else {
+        match = await ensureLiveMatch();
+        const fresh = await buildLiveShared(match);
+        shared = fresh.shared;
+        liveSharedCache = { at: Date.now(), match, shared: fresh.shared };
+      }
+    }
+    if (deviceId && presenceDue(deviceId)) ctx.runInBackground(markWatching(match.id, deviceId));
+    // Reading a clip's last frame means downloading the whole clip, which is the most expensive
+    // thing the page does — and it was being done by every browser for every clip so that the first
+    // upload could win and the rest be thrown away. One viewer is elected per clip instead. The
+    // lease expires if they close the tab, and the next advance winner re-runs the election; the
+    // idempotent upload route stays the safety net for the frame that lands twice anyway.
+    // No device id means no browser to do the work — a probe winning an election would just hold
+    // the lease until it lapsed, so those requests stand aside.
+    const tailFrameWanted: number[] = [];
+    if (deviceId) {
+      for (const id of tailFrameCandidates.slice(0, TAIL_ELECTIONS_PER_TICK)) {
+        if (await claimLease(`tail:${id}`, TAIL_LEASE_TTL_MS, deviceId)) tailFrameWanted.push(id);
+      }
+    }
+    const payload = {
+      ...shared,
+      chat_allowance: await chatAllowanceState(match.id, deviceId),
       tail_frame_wanted: tailFrameWanted,
-      generated_at: new Date().toISOString(),
+    };
+    // Versioned by content, not by clock: the browser hands the tag back and an unchanged feed
+    // costs a bodiless 304 instead of ~50KB of JSON per viewer per heartbeat — which is why
+    // generated_at stays out of the hash. Weak from the start, because the CDN marks recompressed
+    // responses weak anyway and a mismatched marker would break the comparison.
+    const etag = `W/"${(await sha256(JSON.stringify(payload))).slice(0, 32)}"`;
+    if (c.req.header("if-none-match") === etag) {
+      return c.body(null, 304, { ETag: etag });
+    }
+    return c.json({ ...payload, generated_at: new Date().toISOString() }, 200, {
+      ETag: etag,
+      "Cache-Control": "private, no-cache",
     });
   })
   .get("/api/public/clips/:id/video", async (c) => {
     const id = Number(c.req.param("id"));
     if (!Number.isInteger(id) || id <= 0) return c.json({ error: "Invalid clip id" }, 400);
+    // A completed clip is immutable, so the PoP can answer for it. Cloudflare slices a range out of
+    // a cached 200 on its own, which is what lets a seeking player hit the edge too — and it saves
+    // the row lookup and the presign as well as the bytes.
+    const hit = await edgeCache?.match(c.req.raw).catch(() => undefined);
+    if (hit) return hit;
     const [clip] = await db.select({ stage: generations.stage, result_url: generations.result_url })
       .from(generations).where(eq(generations.id, id)).limit(1);
     if (!clip || clip.stage !== "completed" || !clip.result_url) return c.json({ error: "No such clip" }, 404);
@@ -3178,11 +3371,20 @@ const app = new Hono()
     headers.set("accept-ranges", "bytes");
     // A completed clip never changes, so the browser can replay it straight from disk cache.
     headers.set("cache-control", "public, max-age=31536000, immutable");
+    // The first viewer at each PoP pays for the fill; everyone behind them is served from the edge.
+    if (edgeCache && !edgeFillInFlight.has(id)) {
+      edgeFillInFlight.add(id);
+      ctx.runInBackground(fillEdgeCache(id, c.req.url, signed));
+    }
     return new Response(upstream.body, { status: upstream.status, headers });
   })
   .get("/api/public/clips/:id/thumbnail", async (c) => {
     const id = Number(c.req.param("id"));
     if (!Number.isInteger(id) || id <= 0) return c.json({ error: "Invalid clip id" }, 400);
+    // Tail frames are the archive's wallpaper: small, immutable, and asked for by every viewer at
+    // once. Served from the PoP, they cost neither a row lookup nor a presign nor an R2 read.
+    const hit = await edgeCache?.match(c.req.raw).catch(() => undefined);
+    if (hit) return hit;
     const [clip] = await db.select({ thumbnail_url: generations.thumbnail_url }).from(generations)
       .where(eq(generations.id, id)).limit(1);
     if (!clip?.thumbnail_url) return c.json({ error: "That clip has no thumbnail yet" }, 404);
@@ -3195,7 +3397,11 @@ const app = new Hono()
     const length = upstream.headers.get("content-length");
     if (length) headers.set("content-length", length);
     headers.set("cache-control", "public, max-age=31536000, immutable");
-    return new Response(upstream.body, { status: 200, headers });
+    const response = new Response(upstream.body, { status: 200, headers });
+    if (edgeCache) {
+      ctx.runInBackground(edgeCache.put(new Request(c.req.url), response.clone()).catch(() => undefined));
+    }
+    return response;
   })
   .post("/api/public/clips/:id/tail-frame", async (c) => {
     const id = Number(c.req.param("id"));
