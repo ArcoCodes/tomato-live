@@ -2,7 +2,7 @@ import { and, desc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-
 import { Hono } from "hono";
 import { db, secret, storage, vars } from "edgespark";
 import { auth } from "edgespark/http";
-import { buckets, characterDrafts, chatMessages, generations, matchEvents, matches, participants, viewerPerks } from "@defs";
+import { buckets, characterDrafts, chatMessages, generations, matchEvents, matches, participants, viewerPerks, viewerPresence } from "@defs";
 
 const LIVE_SLUG = "island-zero";
 const RENOISE_DEFAULT_BASE_URL = "https://www.renoise.ai/api/public/v1";
@@ -223,7 +223,6 @@ async function ensureLiveMatch() {
     status: "live",
     current_round: 7,
     zone: "North shore rainforest",
-    viewers: 12847,
   }).onConflictDoNothing({ target: matches.slug });
 
   const [match] = await db.select().from(matches).where(eq(matches.slug, LIVE_SLUG)).limit(1);
@@ -1670,6 +1669,29 @@ async function autoQueuedWithin(matchId: number, seconds: number, housOnly: bool
 // The room's chat is the queue the show films from. A message is claimed atomically so two pickers
 // running at once cannot shoot the same line twice, and a message that named a contestant is
 // preferred for that contestant's channel — being mentioned is how a viewer aims their idea.
+// A browser counts as watching for this long after its last heartbeat, which runs every 9s.
+const VIEWER_PRESENCE_WINDOW_SECONDS = 45;
+
+async function markWatching(matchId: number, deviceId: string) {
+  if (!deviceId) return;
+  await db.insert(viewerPresence)
+    .values({ match_id: matchId, device_id: deviceId })
+    .onConflictDoUpdate({
+      target: viewerPresence.device_id,
+      set: { match_id: matchId, last_seen: sql`current_timestamp` },
+    })
+    .catch(() => undefined);
+}
+
+async function countWatching(matchId: number) {
+  const [row] = await db.select({ n: sql<number>`count(*)` }).from(viewerPresence)
+    .where(and(
+      eq(viewerPresence.match_id, matchId),
+      sql`${viewerPresence.last_seen} >= datetime('now', ${`-${VIEWER_PRESENCE_WINDOW_SECONDS} seconds`})`,
+    ));
+  return Number(row?.n ?? 0);
+}
+
 const CHAT_MAX_CHARS = 140;
 // Speaking is what puts a clip on the meter, so it is rationed. Each step grants more, and none of
 // them can be checked from here — following an account off-site leaves nothing the server can read —
@@ -2250,6 +2272,7 @@ const app = new Hono()
   })
   .get("/api/public/live", async (c) => {
     const match = await ensureLiveMatch();
+    await markWatching(match.id, deviceIdOf(c));
     // There is no scheduler here, so the house cast advances on the back of the viewer heartbeat.
     await maybeSeedChat(match);
     await maybeAdvanceHouseCast(match);
@@ -2327,7 +2350,7 @@ const app = new Hono()
     }));
     const pendingGeneration = pendingList[0] ?? null;
     return c.json({
-      match,
+      match: { ...match, viewers: await countWatching(match.id) },
       // Oldest first: the room reads top to bottom.
       chat: chat.reverse().map(chatPayload),
       chat_allowance: await chatAllowanceState(match.id, deviceIdOf(c)),

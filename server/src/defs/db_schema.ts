@@ -163,6 +163,18 @@ export const viewerPerks = sqliteTable("viewer_perks", {
   uniqueIndex("viewer_perks_device_unique").on(table.device_id),
 ]);
 
+// Who is watching right now. One row per browser, refreshed by its own heartbeat, counted over a
+// short window — the alternative was a made-up number on screen.
+export const viewerPresence = sqliteTable("viewer_presence", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  match_id: integer("match_id").notNull().references(() => matches.id),
+  device_id: text("device_id").notNull(),
+  last_seen: text("last_seen").notNull().default(sql`(current_timestamp)`),
+}, (table) => [
+  uniqueIndex("viewer_presence_device_unique").on(table.device_id),
+  index("viewer_presence_seen_idx").on(table.match_id, table.last_seen),
+]);
+
 // Viewer chat. Messages are both the room's conversation and the queue the show pulls its next
 // beat from, which is why consumption is tracked on the row itself.
 export const chatMessages = sqliteTable("chat_messages", {
