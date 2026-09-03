@@ -76,7 +76,7 @@ function GenerationProgress({ stage }: { stage: "queued" | "keyframe" | "video" 
   );
 }
 
-export function Broadcast({ clips, participants, channels, activeChannel, onSelectChannel, myPendingStage, jumpRequest, onJumpHandled }: {
+export function Broadcast({ clips, participants, channels, activeChannel, onSelectChannel, myPendingStage, jumpRequest, onJumpHandled, archiveOpen }: {
   clips: BroadcastClip[];
   /** Needed to show whose clip each archive card is, by character sheet rather than by name. */
   participants: Participant[];
@@ -88,6 +88,8 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
   /** A clip the chat asked to show. Cleared once played so the same request cannot re-fire. */
   jumpRequest?: number | null;
   onJumpHandled?: () => void;
+  /** Phone only: the archive is off screen until the viewer asks for it. */
+  archiveOpen?: boolean;
 }) {
   const playable = useMemo(
     () => clips
@@ -551,7 +553,7 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
         </div>
       </div>
 
-      <div className="clip-history" aria-label="Clip archive">
+      <div className={archiveOpen ? "clip-history is-open" : "clip-history"} aria-label="Clip archive">
         {archiveNav.left ? (
           <button type="button" className="clip-nav is-left" aria-label="Earlier clips" onClick={() => pageArchive(-1)}>
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M15 5l-7 7 7 7" /></svg>

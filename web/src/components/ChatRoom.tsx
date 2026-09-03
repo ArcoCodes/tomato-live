@@ -14,6 +14,9 @@ interface ChatRoomProps {
   /** Told which clip a message became, so the badge can take the viewer to it. */
   onShowClip: (generationId: number) => void;
   onSent: () => void;
+  /** Phone only: shows and hides the archive strip over the picture. */
+  archiveOpen: boolean;
+  onToggleArchive: () => void;
 }
 
 /** Renders "@name" runs in the accent of whoever was named. */
@@ -27,7 +30,7 @@ function renderBody(body: string, byName: Map<string, Participant>) {
   });
 }
 
-export function ChatRoom({ messages, participants, waiting, allowance, onShowClip, onSent }: ChatRoomProps) {
+export function ChatRoom({ messages, participants, waiting, allowance, onShowClip, onSent, archiveOpen, onToggleArchive }: ChatRoomProps) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
@@ -187,6 +190,14 @@ export function ChatRoom({ messages, participants, waiting, allowance, onShowCli
           </div>
         ) : null}
         <div className="chat-field">
+          <button
+            type="button"
+            className={archiveOpen ? "chat-archive-toggle is-open" : "chat-archive-toggle"}
+            onClick={onToggleArchive}
+            aria-pressed={archiveOpen}
+          >
+            Replay
+          </button>
           <input
             ref={inputRef}
             value={draft}

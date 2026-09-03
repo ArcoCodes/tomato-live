@@ -337,8 +337,13 @@ fieldset { border: 0; padding: 0; margin: 0 0 20px; }
   .channel-copy { gap: 2px; }
   .channel-copy strong { font-size: 13px; }
   .channel-copy small { font-size: 8.5px; }
-  /* The archive and the roster are a lean-back page, not a live room. */
-  .clip-history, .roster-panel { display: none; }
+  .roster-panel { display: none; }
+  /* The archive is not gone on a phone, just parked off screen until Replay asks for it. */
+  .clip-history { position: absolute; left: 0; right: 0; bottom: calc(58px + env(safe-area-inset-bottom)); z-index: 8; padding: 4px 8px 0; border-radius: var(--r-lg) var(--r-lg) 0 0; background: rgb(12 9 7 / .82); backdrop-filter: blur(16px); box-shadow: 0 -8px 30px rgb(0 0 0 / .4); transform: translateY(105%); visibility: hidden; transition: transform .3s cubic-bezier(.2,.85,.3,1), visibility .3s; }
+  .clip-history.is-open { transform: none; visibility: visible; }
+  .clip-meta strong { color: #fdfaf8; }
+  .clip-history-track button { color: rgb(253 250 248 / .62); }
+  .clip-history-track button.active { color: #fff; }
   /* Chat rides on the picture, bottom-anchored, the way a live room reads. */
   .chat-panel { position: absolute; left: 0; right: 0; bottom: 0; z-index: 7; display: flex; max-height: 40%; min-height: 0; background: none; border-radius: 0; box-shadow: none; overflow: visible; pointer-events: none; }
   .chat-panel .panel-heading { display: none; }
@@ -403,6 +408,7 @@ fieldset { border: 0; padding: 0; margin: 0 0 20px; }
 .chat-line.is-filmed p { color: var(--muted); }
 .chat-compose { position: relative; flex: none; padding: 12px 16px 16px; border-top: 1px solid var(--line); }
 .chat-field { display: flex; gap: 7px; }
+.chat-archive-toggle { display: none; }
 .chat-field input { flex: 1 1 auto; min-width: 0; height: 44px; border: 1px solid var(--line); border-radius: var(--r-pill); background: var(--surface-2); color: var(--text); padding: 0 18px; font-size: 15px; transition: border-color .16s ease, box-shadow .16s ease; }
 .chat-field input:focus { outline: 0; border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft); }
 .chat-field input::placeholder { color: var(--faint); }
@@ -466,6 +472,8 @@ fieldset { border: 0; padding: 0; margin: 0 0 20px; }
   .chat-field input::placeholder { color: rgb(253 250 248 / .55); }
   .chat-field input:focus { border-color: rgb(255 255 255 / .5); box-shadow: none; }
   .chat-field button { height: 42px; padding: 0 18px; }
+  .chat-archive-toggle { display: grid; place-items: center; flex: none; height: 42px; padding: 0 14px; border: 1px solid rgb(255 255 255 / .2); border-radius: var(--r-pill); background: rgb(255 255 255 / .14); color: #fdfaf8; font-size: 13px; font-weight: 600; cursor: pointer; backdrop-filter: blur(14px); transition: background .16s ease, color .16s ease; }
+  .chat-archive-toggle.is-open { background: var(--brand); border-color: transparent; color: #fff; }
 
   /* Commentary moves above the picture: the bottom of the screen belongs to chat now. */
   .broadcast-subtitle { top: 64px; bottom: auto; z-index: 5; padding: 0 14px; background: none; }

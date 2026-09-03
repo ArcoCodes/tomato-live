@@ -86,6 +86,7 @@ function App() {
   const [joinOpen, setJoinOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [jumpRequest, setJumpRequest] = useState<number | null>(null);
+  const [archiveOpen, setArchiveOpen] = useState(false);
   const [directorOpen, setDirectorOpen] = useState(false);
   const [controls, setControls] = useState<PlayerControl[]>(() => readControls());
   const [loginOpen, setLoginOpen] = useState(false);
@@ -344,6 +345,7 @@ function App() {
           myPendingStage={myPendingStage}
           jumpRequest={jumpRequest}
           onJumpHandled={() => setJumpRequest(null)}
+          archiveOpen={archiveOpen}
         />
         <ChatRoom
           messages={live.chat ?? []}
@@ -359,8 +361,11 @@ function App() {
             }
             setActiveChannel(channelKeyFor(clip));
             setJumpRequest(generationId);
+            setArchiveOpen(false);
           }}
           onSent={() => void refresh(true)}
+          archiveOpen={archiveOpen}
+          onToggleArchive={() => setArchiveOpen((open) => !open)}
         />
       </main>
 
