@@ -136,8 +136,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .gen-progress-copy span { color: rgba(255,255,255,.72); font-size: 10px; }
 @keyframes gen-crawl { from { width: var(--from); } to { width: var(--to); } }
 @keyframes soft-blink { 50% { opacity: .25; } }
-.sound-toggle { position: absolute; right: 12px; top: 12px; z-index: 4; width: 32px; height: 32px; display: grid; place-items: center; border: 0; border-radius: 50%; background: rgba(255,255,255,.16); color: #fdfaf8; font-size: 13px; line-height: 1; cursor: pointer; backdrop-filter: blur(8px); transition: background .16s ease, transform .16s ease; }
+.sound-toggle { position: absolute; right: 12px; top: 12px; z-index: 4; width: 34px; height: 34px; display: grid; place-items: center; border: 0; border-radius: 50%; background: rgba(255,255,255,.16); color: #fdfaf8; line-height: 0; cursor: pointer; backdrop-filter: blur(8px); transition: background .16s ease, transform .16s ease; }
 .sound-toggle:hover { background: rgba(255,255,255,.28); transform: scale(1.06); }
+.sound-toggle svg { display: block; }
 .broadcast-frame:has(.gen-progress) .sound-toggle { top: 62px; }
 .sound-toggle.is-live { background: var(--brand); color: #fff; }
 .scan-lines { pointer-events: none; position: absolute; inset: 0; opacity: .08; background: repeating-linear-gradient(180deg, transparent 0 3px, rgba(0,0,0,.5) 4px); mix-blend-mode: multiply; }
