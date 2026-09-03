@@ -85,6 +85,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 /* Also worn by an anchor, which needs the centring and the underline reset a button gets free. */
 .join-action { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; height: 40px; padding: 0 18px; border: 0; border-radius: var(--r-pill); background: var(--brand); color: #fff; font-weight: 600; font-size: 12px; cursor: pointer; box-shadow: 0 2px 10px rgba(230, 75, 34, .25); transition: transform .18s ease, background .18s ease, box-shadow .18s ease; }
 .join-action span { margin-left: 12px; }
+
+/* An offer, not a label, so the discount is the thing the eye lands on and the sentence explains it.
+   The pill grows with the copy rather than the copy being trimmed to fit a pill. */
+.join-action.is-offer { gap: 9px; padding: 0 12px 0 16px; }
+.join-action.is-offer span { margin-left: 0; opacity: .8; }
+.join-action.is-offer b { font-weight: 600; font-size: 12px; white-space: nowrap; }
+.join-action.is-offer u { padding: 3px 8px; border-radius: var(--r-pill); background: #fff; color: var(--brand-deep); font: 10px var(--utility); font-weight: 700; letter-spacing: .06em; text-decoration: none; white-space: nowrap; }
 .join-action:hover { transform: translateY(-1px); background: var(--brand-deep); box-shadow: 0 6px 18px rgba(230, 75, 34, .3); }
 
 .live-grid { flex: 1 1 0; min-height: 420px; width: 100%; max-width: none; display: grid; grid-template-columns: minmax(380px, 1fr) minmax(460px, 1fr); gap: 12px; padding: 12px; overflow: hidden; }
@@ -317,6 +324,9 @@ fieldset { border: 0; padding: 0; margin: 0 0 20px; }
 
 @media (max-width: 760px) {
   .topbar { height: 56px; padding: 0 12px; }.brand-lockup strong { font-size: 18px; }.brand-lockup div span, .text-action { display: none; }.brand-mark { width: 30px; height: 30px; }.join-action { height: 34px; padding: 0 13px; font-size: 12px; }
+  /* No room for the sentence beside the brand; the offer itself still fits. */
+  .join-action.is-offer { padding: 0 10px; gap: 7px; }
+  .join-action.is-offer b { display: none; }
   .match-title { display: none; }
   .viewer-count { font-size: 8px; gap: 6px; }
   .viewer-faces { display: none; }

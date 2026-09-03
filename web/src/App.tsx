@@ -19,7 +19,9 @@ const ARCHIVE_PAGE = 10;
 
 // Same source and medium the unlock links already use, so Renoise sees one campaign; utm_content is
 // what separates this header button from those.
-const RENOISE_URL = "https://renoise.ai/?utm_medium=renoiselive&utm_source=tomato-renoise-live&utm_content=join-button";
+// Its own utm_content, so the offer can be told apart from the plain header link it replaced and
+// from the unlock ladder — otherwise there is no way to know whether the discount is what worked.
+const RENOISE_URL = "https://renoise.ai/?utm_medium=renoiselive&utm_source=tomato-renoise-live&utm_content=h3-turbo-50off";
 // Mirrors CHARACTER_CREATION_OPEN on the server; the endpoint refuses regardless, this just keeps
 // viewers out of a flow that would fail at the end.
 const CHARACTER_CREATION_OPEN = false;
@@ -507,12 +509,17 @@ function App() {
             ? <button className="join-action" onClick={openJoin}>My contestant<span>↗</span></button>
             : (
               <a
-                className="join-action"
+                className="join-action is-offer"
                 href={RENOISE_URL}
                 target="_blank"
                 rel="noopener noreferrer"
               >
-                Join<span>↗</span>
+                {/* The model name is the pitch: the viewer has just watched what it makes. The long
+                    phrase drops out on a phone, where the header has no room for it, leaving the
+                    part that carries the offer. */}
+                <b>Try MiniMax H3 Max Turbo on Renoise</b>
+                <u>50% OFF</u>
+                <span>↗</span>
               </a>
             )}
         </div>
