@@ -9,6 +9,13 @@ export interface MatchInfo {
   zone: string;
   viewers: number;
   started_at: string;
+  /** The showrunner's live state. The backend rewrites these as the story earns a turn. */
+  story_chapter: number;
+  story_phase: string;
+  story_setting: string;
+  story_goal: string;
+  story_clock: string;
+  story_tension: number;
 }
 
 export interface Participant {

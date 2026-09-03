@@ -323,7 +323,7 @@ function App() {
         </div>
         <div className="match-title">
           <span>{live.match.title}</span>
-          <b>{live.match.subtitle}</b>
+          <b>{live.match.story_phase ? `CH.${live.match.story_chapter} · ${live.match.story_phase}` : live.match.subtitle}</b>
         </div>
         <div className="topbar-actions">
           <ViewerCount
@@ -347,6 +347,12 @@ function App() {
           jumpRequest={jumpRequest}
           onJumpHandled={() => setJumpRequest(null)}
           archiveOpen={archiveOpen}
+          chapter={live.match.story_phase ? {
+            number: live.match.story_chapter,
+            phase: live.match.story_phase,
+            clock: live.match.story_clock,
+            goal: live.match.story_goal,
+          } : null}
         />
         <ChatRoom
           messages={live.chat ?? []}

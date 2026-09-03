@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { db, secret, storage, vars } from "edgespark";
 import { auth } from "edgespark/http";
@@ -888,7 +888,9 @@ function storyChoiceById(choiceId: string) {
 
 // Shared text-model helper. Every caller must treat failure as non-fatal: a missing summary or an
 // un-translated viewer line is never a reason to block video generation.
-async function miniMaxChat(system: string, user: string, maxTokens: number) {
+// maxChars caps what comes back. The default suits a one-line answer; a structured reply needs far
+// more room, and truncating one costs it its closing brace.
+async function miniMaxChat(system: string, user: string, maxTokens: number, maxChars = 800) {
   const payload = asObject(await miniMaxFetch("/v1/text/chatcompletion_v2", {
     method: "POST",
     body: JSON.stringify({
@@ -903,7 +905,7 @@ async function miniMaxChat(system: string, user: string, maxTokens: number) {
   }));
   const choices = Array.isArray(payload.choices) ? payload.choices : [];
   const message = asObject(asObject(choices[0]).message);
-  return cleanText(message.content, 800);
+  return cleanText(message.content, maxChars);
 }
 
 const REASONING_HEADROOM = 1400;
@@ -922,6 +924,8 @@ async function expandViewerPrompt(
   previousStory: string,
   lead: string,
   guests: string[],
+  story: StoryState,
+  moving: boolean,
 ) {
   const beatSeconds = Math.round(LIVE_VIDEO_DURATION_SECONDS / 3);
   const cast = guests.length
@@ -941,7 +945,9 @@ async function expandViewerPrompt(
         guests.length
           ? `- ${guests.join(" and ")} appear alongside ${lead}; give them their own physical actions, do not leave them standing idle. No one outside this list appears.`
           : `- ${lead} is the only person in frame. No new people.`,
-        "- Keep every named person's identity, wardrobe and location unchanged.",
+        moving
+          ? "- This shot is the journey itself: they physically leave where they are and arrive somewhere new. End the clip in the new place, not the old one."
+          : "- Keep every named person's identity, wardrobe and location unchanged.",
         "- End with one line starting 'Audio:' describing on-location sound only — no music, no narration.",
         "- No on-screen text, subtitles, captions or graphics anywhere.",
         "- Write the entire prompt in English, including any spoken line, even when the viewer wrote in Chinese or another language. No Chinese characters anywhere in your output.",
@@ -949,6 +955,10 @@ async function expandViewerPrompt(
       ].join("\n"),
       [
         previousStory ? `Previous clip ended with: ${previousStory}` : `This opens ${lead}'s storyline.`,
+        moving
+          ? `They are leaving that place. By the end of this clip they are in: ${story.setting} (${story.clock}).`
+          : `Where this is happening: ${story.setting} (${story.clock}).`,
+        `What everyone is trying to do right now: ${story.goal}`,
         `Condition: ${condition}`,
         guests.length ? `Also in this shot: ${guests.join(", ")}` : "",
         `Viewer instruction (the "@name" marks are mentions of other contestants): ${viewerPrompt}`,
@@ -966,19 +976,29 @@ async function promptsForViewerInput({
   participant,
   guests,
   latestClip,
+  story,
+  moving,
 }: {
   viewerPrompt: string;
   participant: typeof participants.$inferSelect;
   guests: Array<typeof participants.$inferSelect>;
   latestClip: typeof generations.$inferSelect | null;
+  story: StoryState;
+  moving: boolean;
 }) {
   const previousStory = storyTextFromGeneration(latestClip);
   const condition = contestantCondition(participant);
   const guestNames = guests.map((item) => item.display_name);
-  const expanded = await expandViewerPrompt(viewerPrompt, condition, previousStory, participant.display_name, guestNames);
+  const expanded = await expandViewerPrompt(viewerPrompt, condition, previousStory, participant.display_name, guestNames, story, moving);
   const cue = viewerPrompt;
   const sharedContinuity = [
-    previousStory ? `Continue from this clean visual memory: ${previousStory}.` : "Opening situation: a lone survival contestant is on a rain-soaked remote coast as a storm approaches.",
+    previousStory
+      ? `Continue from this clean visual memory: ${previousStory}.`
+      : `Opening situation: ${participant.display_name} is at ${story.setting}, ${story.clock}.`,
+    moving
+      ? `This shot is the move: they leave where they are and end it at ${story.setting}.`
+      : `Where the show is now: ${story.setting}, ${story.clock}.`,
+    `Chapter: ${story.phase}. What they are trying to do: ${story.goal}.`,
     `Branch action: ${cue}.`,
     `Physical condition: ${condition}.`,
   ].join("\n");
@@ -989,12 +1009,14 @@ async function promptsForViewerInput({
     : `${participant.display_name} — ${cue}`;
   return {
     cue,
-    visualMemory: `${memorySource}; ${condition}; stormy remote coast; documentary handheld realism; no on-screen graphics`,
+    // The suffix here is chained straight into the next clip as previousStory, so it has to carry
+    // the CURRENT place. A hardcoded one re-injects itself forever and pins the show to it.
+    visualMemory: `${memorySource}; ${condition}; ${storyBackdrop(story)}; documentary handheld realism; no on-screen graphics`,
     keyframePrompt: [
       "Create a cinematic 16:9 opening frame for a survival challenge using the supplied contestant reference image.",
       sharedContinuity,
       `Frame: the supplied contestant is visibly starting this branch: ${cue}.`,
-      "Composition: documentary survival camera, grounded realism, wet fabric, muddy skin, readable face, tense body language, tropical storm atmosphere, no duplicate person.",
+      `Composition: documentary survival camera, grounded realism, readable face, tense body language, the light and weather of ${story.setting}, no duplicate person.`,
       "Preserve the contestant identity, age, face, hairstyle, ethnicity, body proportions and outfit continuity from the reference.",
       NO_SCREEN_TEXT_PROMPT,
     ].join("\n"),
@@ -1009,9 +1031,13 @@ async function promptsForViewerInput({
         PACING_PROMPT,
         FIELD_AUDIO_PROMPT,
       ].filter(Boolean).join("\n"),
-      "Continuity: preserve the first frame, contestant identity, wardrobe, location, weather, color grade and camera style.",
+      moving
+        ? "Continuity: preserve the first frame, contestant identity, wardrobe and camera style. The location is meant to change across this clip — travel to it on camera, do not cut to it."
+        : "Continuity: preserve the first frame, contestant identity, wardrobe, location, weather, color grade and camera style.",
       NO_SCREEN_TEXT_PROMPT,
-      "Avoid new people, face morphing, fantasy effects, sudden costume changes, or jumping to a different location.",
+      moving
+        ? "Avoid new people, face morphing, fantasy effects, sudden costume changes, or any hard cut."
+        : "Avoid new people, face morphing, fantasy effects, sudden costume changes, or jumping to a different location.",
     ].join("\n"),
   };
 }
@@ -1020,7 +1046,7 @@ async function promptsForViewerInput({
 // timeline rather than on any single viewer's instruction.
 // The opening frame is the END of a contestant's shot. Without saying so, the model just replays
 // the beat that already aired — the cutaway has to be told that time moves on.
-async function expandDirectorCut(sourceStory: string, timeline: string[], lead: string, condition: string) {
+async function expandDirectorCut(sourceStory: string, timeline: string[], lead: string, condition: string, story: StoryState) {
   const beatSeconds = Math.round(LIVE_VIDEO_DURATION_SECONDS / 3);
   try {
     const shot = await miniMaxChat(
@@ -1034,12 +1060,15 @@ async function expandDirectorCut(sourceStory: string, timeline: string[], lead: 
         "- Show the wider situation instead of the contestant's hands: the terrain, the weather closing in, distance still to cover, what is about to become a problem.",
         `- Three escalating beats of about ${beatSeconds} seconds each, written as "0-${beatSeconds}s: ...".`,
         "- Keep the location, weather, wardrobe and colour grade continuous with the opening frame.",
+        "- This is the show's wide view, so use it: reveal how far the situation has moved on, what the place has become, and what is closing in next.",
         "- End with one line starting 'Audio:' describing a calm English-speaking commentator narrating the situation over storm ambience.",
         "- No on-screen text, subtitles, captions or graphics. Write everything in English.",
         "Output only the prompt itself, no preamble.",
       ].join("\n"),
       [
-        sourceStory ? `The frame we open on is the end of: ${sourceStory}` : "The frame we open on is a contestant on a storm-lit coast.",
+        sourceStory ? `The frame we open on is the end of: ${sourceStory}` : `The frame we open on is a contestant at ${story.setting}.`,
+        `Where the show is now: ${story.setting}, ${story.clock}.`,
+        `Chapter: ${story.phase}. What they are trying to do: ${story.goal}. Tension: ${story.tension}/100.`,
         timeline.length ? `Story so far: ${timeline.join(" ")}` : "This is early in the match.",
         `Contestant visible in the frame: ${lead} — ${condition}`,
       ].join("\n"),
@@ -1055,23 +1084,26 @@ async function promptsForDirectorCut({
   participant,
   sourceStory,
   timeline,
+  story,
 }: {
   participant: typeof participants.$inferSelect;
   sourceStory: string;
   timeline: string[];
+  story: StoryState;
 }) {
-  const recap = timeline.length ? `Story so far: ${timeline.join(" ")}` : "Story so far: the storm is closing in on the island and the contestants are still scattered.";
+  const recap = timeline.length ? `Story so far: ${timeline.join(" ")}` : `Story so far: ${story.goal}, and the contestants are still scattered.`;
   const condition = contestantCondition(participant);
-  const expanded = await expandDirectorCut(sourceStory, timeline, participant.display_name, condition);
+  const expanded = await expandDirectorCut(sourceStory, timeline, participant.display_name, condition, story);
   const sharedContinuity = [
     sourceStory
       ? `The opening frame is where ${participant.display_name}'s last shot ended: ${sourceStory}. That beat is over — this cutaway takes place after it.`
-      : "Opening situation: a lone survival contestant is on a rain-soaked remote coast as a storm approaches.",
+      : `Opening situation: ${participant.display_name} is at ${story.setting}, ${story.clock}.`,
+    `Where the show is now: ${story.setting}, ${story.clock}. Chapter: ${story.phase}. Objective: ${story.goal}.`,
     recap,
     `Physical condition: ${condition}.`,
   ].join("\n");
   return {
-    visualMemory: cleanText(expanded || `${sourceStory || recap}; stormy remote coast; documentary handheld realism; no on-screen graphics`, 600),
+    visualMemory: cleanText(expanded || `${sourceStory || recap}; ${storyBackdrop(story)}; documentary handheld realism; no on-screen graphics`, 600),
     keyframePrompt: [
       "Create a cinematic 16:9 broadcast frame for a survival challenge using the supplied opening frame.",
       sharedContinuity,
@@ -1287,6 +1319,9 @@ async function queueLiveGeneration(request: GenerationRequest, createdBy: string
 // Turns a queued row into a submitted MiniMax task. Runs from the sync endpoint, so its cost lands
 // on a poll the browser is making anyway rather than on the viewer's submit.
 async function startQueuedGeneration(generation: typeof generations.$inferSelect) {
+  const [ownerMatch] = await db.select().from(matches).where(eq(matches.id, generation.match_id)).limit(1);
+  if (!ownerMatch) throw new Error("That match is gone");
+  const story = storyStateOf(ownerMatch);
   const participantIds = parseParticipantIds(generation.participant_ids);
   const selected = await db.select().from(participants)
     .where(and(eq(participants.match_id, generation.match_id), inArray(participants.id, participantIds)));
@@ -1314,6 +1349,7 @@ async function startQueuedGeneration(generation: typeof generations.$inferSelect
     generation.channel,
     generation.channel_participant_id,
   );
+  const moving = generation.channel === "participant" && owesTransition(ownerMatch, latestClip?.id ?? null);
   const queuedPrompt = (() => {
     try {
       return asObject(JSON.parse(generation.prompt || "{}"));
@@ -1335,12 +1371,18 @@ async function startQueuedGeneration(generation: typeof generations.$inferSelect
       // reading the director channel's own previous clip described a different shot entirely.
       sourceStory: storyTextFromGeneration(sourceClip),
       timeline: await recentVisualMemories(generation.match_id, 3),
+      story,
     })
     : await promptsForViewerInput({
       viewerPrompt: generation.viewer_prompt ?? "",
       participant: lead,
       guests,
       latestClip,
+      story,
+      // The story moved on without this channel, so its next shot is the walk to the new place.
+      // Breaking the frame chain instead would reopen on the character sheet, whose background is
+      // the beach we are trying to leave.
+      moving,
     });
 
   const keyframePrompt = cleanText(prompts.keyframePrompt, 3500);
@@ -1372,7 +1414,9 @@ async function startQueuedGeneration(generation: typeof generations.$inferSelect
     cleanText(videoPrompt, 3500),
     generation.channel === "director" ? DIRECTOR_AUDIO_PROMPT : FIELD_AUDIO_PROMPT,
     NO_SCREEN_TEXT_PROMPT,
-    "Avoid any hard cut to a different scene, any reset, new location, new people, face morphing, or sudden costume changes.",
+    moving
+      ? "The location changes across this take, on camera and without a cut. Avoid any hard cut, reset, new people, face morphing, or sudden costume changes."
+      : "Avoid any hard cut to a different scene, any reset, new location, new people, face morphing, or sudden costume changes.",
   ].filter(Boolean).join("\n");
 
   const videoTask = await createMiniMaxVideoTask(taskPrompt, opening.url, generation.duration_seconds);
@@ -1539,6 +1583,8 @@ async function summarizeClip(generation: typeof generations.$inferSelect) {
     // Keep the template line.
   }
   await db.update(generations).set({ summary }).where(eq(generations.id, generation.id));
+  await db.update(matches).set({ story_beat: sql`story_beat + 1` })
+    .where(eq(matches.id, generation.match_id)).catch(() => undefined);
   await db.insert(matchEvents).values({
     match_id: generation.match_id,
     participant_id: generation.channel_participant_id,
@@ -1989,7 +2035,216 @@ async function maybeSeedChat(match: typeof matches.$inferSelect) {
   }
 }
 
-const HOUSE_CAST_CUE = "Take the next concrete step in your own plan on this island, and run into a new complication while doing it.";
+// ── The showrunner ───────────────────────────────────────────────────────────
+// The world used to be three string constants baked into the prompts, so the show filmed the same
+// beach with the same instruction forever no matter what the timeline said. These read that world
+// out of the match row instead, and rewrite it whenever the story has earned a turn.
+
+// Completed clips between turns when the room is silent. Every real viewer line pulls the next turn
+// two clips closer — that is what "the audience moves the plot" means mechanically.
+// At the live tier the show finishes roughly ten clips a minute, so 20 beats is a turn every couple
+// of minutes when the room is silent, and about forty seconds when it is busy. Below the floor the
+// story thrashes: nobody can follow a chapter that ends before its first clip has aired.
+const STORY_BEAT_TARGET = 20;
+const STORY_BEAT_FLOOR = 8;
+const STORY_PUSH_WEIGHT = 2;
+
+type StoryState = {
+  chapter: number;
+  phase: string;
+  setting: string;
+  goal: string;
+  clock: string;
+  directive: string;
+  tension: number;
+};
+
+function storyStateOf(match: typeof matches.$inferSelect): StoryState {
+  return {
+    chapter: match.story_chapter,
+    phase: match.story_phase,
+    setting: match.story_setting,
+    goal: match.story_goal,
+    clock: match.story_clock,
+    directive: match.story_directive,
+    tension: match.story_tension,
+  };
+}
+
+// Where the show is, written for a video model. Every prompt that used to say "stormy remote coast"
+// says this instead.
+function storyBackdrop(story: StoryState) {
+  return `${story.setting}; ${story.clock}`;
+}
+
+// The model is asked for JSON but answers like a writer, sometimes fenced, sometimes with a
+// sentence in front. Take the outermost object and ignore the rest.
+function parseModelJson(raw: string) {
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  try {
+    return asObject(JSON.parse(raw.slice(start, end + 1)));
+  } catch {
+    return null;
+  }
+}
+
+// Viewer lines since the last turn, oldest first. Seeded chatter is deliberately excluded: the point
+// of this list is to let the people actually in the room steer, and the seeds are ours.
+async function viewerPushSince(matchId: number, since: string | null) {
+  const rows = await db.select({ name: chatMessages.display_name, body: chatMessages.body })
+    .from(chatMessages)
+    .where(and(
+      eq(chatMessages.match_id, matchId),
+      sql`${chatMessages.device_id} not like 'seed:%'`,
+      since ? sql`${chatMessages.created_at} > ${since}` : sql`1 = 1`,
+    ))
+    .orderBy(desc(chatMessages.id))
+    .limit(12);
+  return rows.map((row) => `${row.name}: ${row.body}`).reverse();
+}
+
+const STORY_TURN_RULES = [
+  "You are the showrunner of a survival reality show that films around the clock. Your job is to move the story on: decide what the island does to these people next.",
+  "Return ONLY a JSON object — no prose, no code fence — with exactly these keys:",
+  '"phase": a 2-4 word name for the stretch of story that starts now.',
+  '"setting": one clause naming where the show is now and what it physically looks like. This is fed to a video model as the location of every shot, so it must be concrete and filmable.',
+  '"clock": time of day and which day, e.g. "first light on day two".',
+  '"goal": the one thing the contestants are now trying to do, in one clause.',
+  '"directive": one instruction under 25 words that ANY of them could act on right now. Never name a contestant and never assume where one particular person is standing — every one of them is handed this same line, so it has to be what the situation demands of whoever is on camera. A physical action with a complication in it, never a feeling.',
+  '"tension": integer 0-100, how close this situation is to disaster.',
+  '"relocated": true only when "setting" is a genuinely different place from the current one.',
+  "Rules:",
+  "- The story must MOVE. Never hand back the current phase and setting unchanged; something has to have turned.",
+  "- Relocate when the timeline has earned it: they climbed, they went inside, the water drove them out, they found a way through. Roughly every second or third turn should be a real move.",
+  "- Time only ever moves forward. Days pass, weather turns, light changes.",
+  "- When the viewers below asked for something, that is the strongest signal you have — bend the story toward it.",
+  "- Escalate, then release: after a brutal stretch, a quieter regrouping stretch is allowed and welcome.",
+  "- Everything in English.",
+].join("\n");
+
+// Runs on the heartbeat. Returns the new state when the story turned, null when it is not time yet.
+async function advanceStory(match: typeof matches.$inferSelect) {
+  const state = storyStateOf(match);
+  try {
+    requireMiniMax();
+    // Cheap gate first. Every watching browser runs this every few seconds, and below the floor no
+    // amount of chat can pull the turn forward — so do not go near the chat table to find that out.
+    if (match.story_beat < STORY_BEAT_FLOOR) return null;
+    const pushes = await viewerPushSince(match.id, match.story_advanced_at).catch(() => [] as string[]);
+    const target = Math.max(STORY_BEAT_FLOOR, STORY_BEAT_TARGET - pushes.length * STORY_PUSH_WEIGHT);
+    if (match.story_beat < target) return null;
+    // Every watching browser ticks this, so without an atomic claim a dozen heartbeats all see the
+    // same due beat and all pay for a turn. Zeroing the counter IS the claim; the losers write
+    // nothing and go home.
+    const claimed = await db.update(matches).set({ story_beat: 0 })
+      .where(and(eq(matches.id, match.id), gte(matches.story_beat, target)))
+      .returning({ id: matches.id });
+    if (!claimed.length) return null;
+    // The claim already zeroed the counter, so a failed turn would otherwise cost the show a whole
+    // stretch of silence. Hand the beats back and let the next tick try again.
+    const releaseClaim = () => db.update(matches).set({ story_beat: sql`story_beat + ${target}` })
+      .where(eq(matches.id, match.id)).catch(() => undefined);
+
+    const timeline = await recentSummaries(match.id, 10).catch(() => [] as string[]);
+    const cast = await db.select().from(participants)
+      .where(and(eq(participants.match_id, match.id), eq(participants.is_system, true)));
+
+    const answer = await miniMaxChat(
+      STORY_TURN_RULES,
+      [
+        `Chapter ${state.chapter} — ${state.phase}`,
+        `Where they are now: ${state.setting}`,
+        `Time now: ${state.clock}`,
+        `What they are trying to do: ${state.goal}`,
+        `Tension now: ${state.tension}/100`,
+        timeline.length ? `\nWhat has happened, in order:\n${timeline.map((line, i) => `${i + 1}. ${line}`).join("\n")}` : "\nThe show has only just started.",
+        cast.length ? `\nThe contestants: ${cast.map((item) => contestantCondition(item)).join("; ")}` : "",
+        pushes.length
+          ? `\nThe viewers watching right now have been saying:\n${pushes.map((line) => `- ${line}`).join("\n")}\nTake them seriously — they are steering this show.`
+          : "\nThe room is quiet, so this turn is yours to choose.",
+      ].filter(Boolean).join("\n"),
+      chatBudget(1200),
+      4000,
+    );
+
+    const next = parseModelJson(answer);
+    if (!next) {
+      console.error("[story] unparseable turn", answer.slice(0, 200));
+      await releaseClaim();
+      return null;
+    }
+    const setting = cleanText(next.setting, 260);
+    const phase = cleanText(next.phase, 60);
+    const directive = cleanText(next.directive, 240);
+    // A turn without a place and an instruction is worse than no turn: the beat counter would reset
+    // and the show would coast on the old constants for another full stretch.
+    if (!setting || !phase || !directive) {
+      console.error("[story] incomplete turn", answer.slice(0, 200));
+      await releaseClaim();
+      return null;
+    }
+
+    const goal = cleanText(next.goal, 220) || state.goal;
+    const clock = cleanText(next.clock, 60) || state.clock;
+    const rawTension = Number(next.tension);
+    const tension = Number.isFinite(rawTension) ? Math.min(100, Math.max(0, Math.round(rawTension))) : state.tension;
+    const relocated = next.relocated === true
+      && setting.trim().toLowerCase() !== state.setting.trim().toLowerCase();
+    const chapter = relocated ? state.chapter + 1 : state.chapter;
+
+    // Channels still sitting in the old place owe the audience the walk to the new one. Marking the
+    // current head of the clip list is what tells them apart from channels that already moved.
+    const [head] = await db.select({ id: sql<number>`coalesce(max(id), 0)` }).from(generations)
+      .where(eq(generations.match_id, match.id));
+
+    await db.update(matches).set({
+      story_chapter: chapter,
+      story_phase: phase,
+      story_setting: setting,
+      story_goal: goal,
+      story_clock: clock,
+      story_directive: directive,
+      story_tension: tension,
+      story_beat: 0,
+      story_advanced_at: sql`(current_timestamp)` as unknown as string,
+      ...(relocated ? { story_reframe_after: Number(head?.id ?? 0) } : {}),
+    }).where(eq(matches.id, match.id));
+
+    // Moving costs them, but a new place is also the one chance to catch a breath. Without this the
+    // cast bottoms out permanently and contestantCondition freezes again, one rung lower.
+    if (relocated) {
+      await db.update(participants).set({
+        stamina: sql`min(100, stamina + 16)`,
+        hunger: sql`min(100, hunger + 6)`,
+      }).where(and(eq(participants.match_id, match.id), eq(participants.is_system, true)));
+    }
+
+    await db.insert(matchEvents).values({
+      match_id: match.id,
+      participant_id: null,
+      round: match.current_round,
+      kind: "world",
+      title: `Chapter ${chapter} — ${phase}`,
+      detail: `${clock}. ${setting}. ${goal}`,
+    }).catch(() => undefined);
+
+    console.log(`[story] chapter ${chapter} — ${phase}${relocated ? " (moved)" : ""}: ${setting}`);
+    return { chapter, phase, setting, goal, clock, directive, tension } satisfies StoryState;
+  } catch (error) {
+    // A missed turn just means the story holds its current shape for another stretch.
+    console.error("[story] turn failed", error instanceof Error ? error.message : String(error));
+    return null;
+  }
+}
+
+// A contestant channel whose newest clip predates the last relocation has not physically arrived
+// yet: its next shot is the journey, not another beat in the place it already left.
+function owesTransition(match: typeof matches.$inferSelect, latestClipId: number | null) {
+  if (match.story_reframe_after <= 0) return false;
+  return (latestClipId ?? 0) <= match.story_reframe_after;
+}
 
 async function maybeAdvanceHouseCast(match: typeof matches.$inferSelect) {
   const matchId = match.id;
@@ -2039,8 +2294,14 @@ async function maybeAdvanceHouseCast(match: typeof matches.$inferSelect) {
       videoPrompt: "",
       visualMemory: "",
       duration: LIVE_VIDEO_DURATION_SECONDS,
-      viewerPrompt: cue ? cue.body : HOUSE_CAST_CUE,
+      viewerPrompt: cue ? cue.body : match.story_directive,
     }, cue ? "house:chat" : "house:auto");
+    if (generation) {
+      await db.update(participants).set({
+        stamina: sql`max(0, stamina - 3)`,
+        hunger: sql`min(100, hunger + 2)`,
+      }).where(eq(participants.id, next.id)).catch(() => undefined);
+    }
     if (cue && generation) {
       await db.update(chatMessages).set({ generation_id: generation.id })
         .where(eq(chatMessages.id, cue.id)).catch(() => undefined);
@@ -2286,6 +2547,16 @@ const app = new Hono()
       })(),
       realViewers: await countRealWatching(match.id),
       board: await audienceBoard(match.id),
+      story: {
+        ...storyStateOf(match),
+        beat: match.story_beat,
+        // What the counter is racing to. Shown so a stalled story is visibly a stalled story.
+        target: Math.max(
+          STORY_BEAT_FLOOR,
+          STORY_BEAT_TARGET - (await viewerPushSince(match.id, match.story_advanced_at).catch(() => [])).length * STORY_PUSH_WEIGHT,
+        ),
+        advancedAt: match.story_advanced_at,
+      },
       running: inFlight.length,
       houseUsed: Number(houseTally?.n ?? 0),
       houseLimit: HOUSE_CAST_MAX_CLIPS,
@@ -2328,7 +2599,8 @@ const app = new Hono()
     await markWatching(match.id, deviceIdOf(c));
     // There is no scheduler here, so the house cast advances on the back of the viewer heartbeat.
     await maybeSeedChat(match);
-    await maybeAdvanceHouseCast(match);
+    const turned = await advanceStory(match);
+    await maybeAdvanceHouseCast(turned ? (await ensureLiveMatch()) : match);
     const [roster, allEvents, clips, pendingGenerations] = await Promise.all([
       db.select().from(participants)
         .where(and(

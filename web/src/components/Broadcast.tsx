@@ -60,7 +60,7 @@ export interface ChannelTab {
   isMark?: boolean;
 }
 
-export function Broadcast({ clips, participants, channels, activeChannel, onSelectChannel, jumpRequest, onJumpHandled, archiveOpen }: {
+export function Broadcast({ clips, participants, channels, activeChannel, onSelectChannel, jumpRequest, onJumpHandled, archiveOpen, chapter }: {
   clips: BroadcastClip[];
   /** Needed to show whose clip each archive card is, by character sheet rather than by name. */
   participants: Participant[];
@@ -72,6 +72,8 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
   onJumpHandled?: () => void;
   /** Phone only: the archive is off screen until the viewer asks for it. */
   archiveOpen?: boolean;
+  /** Where the story has got to. Sits on the picture because the topbar is hidden on phones. */
+  chapter?: { number: number; phase: string; clock: string; goal: string } | null;
 }) {
   const playable = useMemo(
     () => clips
@@ -499,6 +501,13 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
             </div>
           ) : null}
           <div className="scan-lines" />
+          {chapter ? (
+            <div className="chapter-chip" title={chapter.goal}>
+              <span>Chapter {chapter.number}</span>
+              <b>{chapter.phase}</b>
+              <i>{chapter.clock}</i>
+            </div>
+          ) : null}
           {/* The timeline summary doubles as a caption, so the show reads even with the sound off. */}
           {clip?.summary && firstFrameShown ? (
             <div className="broadcast-subtitle">

@@ -48,6 +48,11 @@ interface TierState {
     spoke: number; spokeToday: number; messages: number;
     followedX: number; followedJp: number; registered: number;
   };
+  story: {
+    chapter: number; phase: string; setting: string; goal: string;
+    clock: string; directive: string; tension: number;
+    beat: number; target: number; advancedAt: string | null;
+  };
   running: number;
   houseUsed: number;
   houseLimit: number;
@@ -201,6 +206,34 @@ export function AdminChange() {
               </button>
             ))}
           </div>
+
+          {state.story ? (
+            <section className="admin-story">
+              <h2>Story</h2>
+              <div className="admin-story-head">
+                <span>CHAPTER {state.story.chapter}</span>
+                <strong>{state.story.phase}</strong>
+                <em>{state.story.clock}</em>
+              </div>
+              <dl className="admin-story-facts">
+                <div><dt>Where</dt><dd>{state.story.setting}</dd></div>
+                <div><dt>Objective</dt><dd>{state.story.goal}</dd></div>
+                <div><dt>Cast is acting on</dt><dd>{state.story.directive}</dd></div>
+              </dl>
+              <div className="admin-story-meters">
+                {/* The beat counter is what actually decides when the story turns, so show it as the
+                    race it is. Viewer messages pull the target down; a stalled bar is a stalled show. */}
+                <div>
+                  <span>NEXT TURN<b>{state.story.beat} / {state.story.target} clips</b></span>
+                  <i><u style={{ width: `${Math.min(100, Math.round(state.story.beat / Math.max(1, state.story.target) * 100))}%` }} /></i>
+                </div>
+                <div>
+                  <span>TENSION<b>{state.story.tension} / 100</b></span>
+                  <i><u className="is-hot" style={{ width: `${state.story.tension}%` }} /></i>
+                </div>
+              </div>
+            </section>
+          ) : null}
 
           {state.board ? (
             <section className="admin-board">

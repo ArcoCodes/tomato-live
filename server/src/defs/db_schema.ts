@@ -28,6 +28,22 @@ export const matches = sqliteTable("matches", {
   // How talkative the seeded audience is. Separate from the render tier: chat is what fills the
   // queue, rendering is what drains it.
   chat_seed_tier: text("chat_seed_tier", { enum: ["busy", "normal", "quiet", "off"] }).notNull().default("normal"),
+  // The showrunner state. Prompts read these instead of the constants that used to be baked into
+  // them, which is the only reason the show can ever leave the beach it started on.
+  story_chapter: integer("story_chapter").notNull().default(1),
+  story_phase: text("story_phase").notNull().default("Landfall"),
+  story_setting: text("story_setting").notNull().default("a rain-soaked remote coast as a storm closes in"),
+  story_goal: text("story_goal").notNull().default("get off the exposed shore before the storm makes landfall"),
+  story_clock: text("story_clock").notNull().default("dusk on day one"),
+  // What the house cast acts on when the chat queue is empty. Rewritten every time the story turns.
+  story_directive: text("story_directive").notNull().default("Take the next concrete step toward shelter, and run into a new complication doing it."),
+  story_tension: integer("story_tension").notNull().default(20),
+  // Completed clips since the last turn. Viewer messages count double, so a busy room moves faster.
+  story_beat: integer("story_beat").notNull().default(0),
+  // Generation id at the moment the location last changed. A channel whose last clip predates this
+  // must reopen on its character sheet — the old tail frame would drag the old place forward.
+  story_reframe_after: integer("story_reframe_after").notNull().default(0),
+  story_advanced_at: text("story_advanced_at"),
   started_at: text("started_at").notNull().default(sql`(current_timestamp)`),
   created_at: text("created_at").notNull().default(sql`(current_timestamp)`),
 }, (table) => [

@@ -142,6 +142,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .sound-toggle:hover { background: rgba(255,255,255,.28); transform: scale(1.06); }
 .sound-toggle svg { display: block; }
 .sound-toggle.is-live { background: var(--brand); color: #fff; }
+
+/* Where the story has got to. Deliberately quieter than the commentary card: this is a bookmark,
+   not a caption, and the two must never read as one block. */
+.chapter-chip { position: absolute; left: 12px; top: 12px; z-index: 4; display: flex; flex-direction: column; gap: 1px; max-width: 46%; padding: 5px 10px 6px; border-radius: var(--r-sm); background: rgb(25 21 18 / .42); -webkit-backdrop-filter: blur(10px) saturate(1.1); backdrop-filter: blur(10px) saturate(1.1); color: #fdfaf8; pointer-events: none; }
+.chapter-chip span { font: 700 7px var(--utility); letter-spacing: .14em; color: rgb(253 250 248 / .62); }
+.chapter-chip b { font-size: 11px; font-weight: 700; line-height: 1.25; }
+.chapter-chip i { font-style: normal; font-size: 8.5px; font-weight: 600; line-height: 1.3; color: rgb(253 250 248 / .55); }
 .scan-lines { pointer-events: none; position: absolute; inset: 0; opacity: .08; background: repeating-linear-gradient(180deg, transparent 0 3px, rgba(0,0,0,.5) 4px); mix-blend-mode: multiply; }
 .channel-bar { flex: none; display: flex; gap: 6px; padding: 8px; overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--sh-1); }
 .channel-bar button { max-width: 230px; min-width: 176px; padding: 9px 14px 9px 9px; border: 1px solid transparent; border-radius: var(--r-md); background: var(--surface-2); color: var(--muted); text-align: left; cursor: pointer; display: flex; align-items: center; gap: 9px; transition: border-color .16s ease, background .16s ease, color .16s ease; }
@@ -439,6 +446,28 @@ fieldset { border: 0; padding: 0; margin: 0 0 20px; }
 .admin-board-grid span { color: var(--muted); font: 9px var(--utility); letter-spacing: .08em; }
 .admin-board-grid strong { font: 24px var(--display); font-weight: 400; letter-spacing: .01em; }
 .admin-board-grid small { color: var(--faint); font-size: 10px; line-height: 1.45; }
+
+.admin-story { display: flex; flex-direction: column; gap: 14px; padding: 20px; border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--sh-1); }
+.admin-story h2 { margin: 0; font: 17px var(--display); font-weight: 400; }
+.admin-story-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; }
+.admin-story-head span { color: var(--brand); font: 700 9px var(--utility); letter-spacing: .12em; }
+.admin-story-head strong { font: 22px var(--display); font-weight: 400; }
+.admin-story-head em { color: var(--faint); font-style: normal; font-size: 11px; }
+.admin-story-facts { display: flex; flex-direction: column; gap: 8px; margin: 0; }
+.admin-story-facts > div { display: grid; grid-template-columns: 132px 1fr; gap: 12px; align-items: baseline; }
+.admin-story-facts dt { color: var(--muted); font: 9px var(--utility); letter-spacing: .08em; }
+.admin-story-facts dd { margin: 0; font-size: 12.5px; line-height: 1.5; }
+.admin-story-meters { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.admin-story-meters > div { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-radius: var(--r-md); background: var(--surface-2); }
+.admin-story-meters span { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; color: var(--muted); font: 9px var(--utility); letter-spacing: .08em; }
+.admin-story-meters b { color: var(--text); font-size: 11px; font-weight: 650; letter-spacing: 0; }
+.admin-story-meters i { display: block; height: 4px; border-radius: 2px; background: rgb(25 21 18 / .1); overflow: hidden; }
+.admin-story-meters u { display: block; height: 100%; border-radius: 2px; background: var(--brand); transition: width .3s ease; }
+.admin-story-meters u.is-hot { background: linear-gradient(90deg, var(--brand), #d4453a); }
+
+@media (max-width: 620px) {
+  .admin-story-facts > div { grid-template-columns: 1fr; gap: 2px; }
+}
 .admin-queue { display: flex; flex-direction: column; gap: 16px; padding: 20px; border-radius: var(--r-lg); background: var(--surface); box-shadow: var(--sh-1); }
 .admin-queue h2 { margin: 0; font: 17px var(--display); font-weight: 400; }
 .admin-queue-group { display: flex; flex-direction: column; gap: 7px; }
@@ -499,6 +528,9 @@ fieldset { border: 0; padding: 0; margin: 0 0 20px; }
   .broadcast-subtitle p { font-size: 10.5px; line-height: 1.36; }
   /* Clear of both the channel strip above and the chat below. */
   .sound-toggle { top: auto; bottom: 54%; right: 12px; }
+  /* The top of the picture is spoken for — channel strip, then commentary. The chapter sits on the
+     opposite corner from the sound button, on the last free line above chat. */
+  .chapter-chip { top: auto; bottom: 54%; left: 12px; max-width: 58%; }
 
   footer { display: none; }
   .legal-note.is-phone { display: block; margin: 6px 2px 0; text-align: center; color: rgb(253 250 248 / .5); font-size: 9.5px; text-shadow: 0 1px 3px rgb(0 0 0 / .6); }
