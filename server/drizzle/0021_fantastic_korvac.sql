@@ -1,0 +1,1 @@
+ALTER TABLE `chat_messages` ADD `attempts` integer DEFAULT 0 NOT NULL;

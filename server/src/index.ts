@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { db, secret, storage, vars } from "edgespark";
 import { auth } from "edgespark/http";
@@ -13,7 +13,7 @@ const CHARACTER_MODEL = "image-01";
 // aspect ratio IS the broadcast's aspect ratio. Portrait, because most of the audience is on a phone.
 const CHARACTER_RATIO = "9:16";
 const CHARACTER_RESOLUTION = "768x1366";
-const LIVE_VIDEO_MODEL = "MiniMax-H3-Max";
+const LIVE_VIDEO_MODEL = "minimax/h3-max-turbo";
 const LEGACY_LIVE_VIDEO_MODEL = "hailuo-h3-max";
 const LIVE_VIDEO_RESOLUTION = "480P";
 const LIVE_VIDEO_DURATION_SECONDS = 10;
@@ -31,8 +31,6 @@ const LIVE_PROMPT_VERSION = "channel-v3";
 const CONTINUABLE_PROMPT_VERSIONS = new Set(["textless-v2", LIVE_PROMPT_VERSION]);
 const VIEWER_PROMPT_MAX_CHARS = 300;
 const TAIL_FRAME_MAX_BYTES = 4 * 1024 * 1024;
-const SUMMARY_MODEL = "MiniMax-M2";
-const VISION_MODEL = "MiniMax-M3";
 const FIELD_AUDIO_PROMPT = "Audio: on-location sound only — wind, rain hitting fabric and rock, footsteps in mud, the contestant's breathing and effort. No music, no narration, no voice-over.";
 const DIRECTOR_AUDIO_PROMPT = "Audio: a calm English-speaking off-screen commentator narrates the situation in one or two short sentences, mixed over storm ambience. Broadcast commentary tone, spoken in English, no music, no other language.";
 const PACING_PROMPT = [
@@ -356,7 +354,14 @@ async function miniMaxProbeRequest(path: string, init: RequestInit = {}) {
   };
 }
 
+// The one call not moved to fal. It leans on MiniMax's subject_reference to carry a real face into
+// the sheet, and picking a fal model with that capability is a decision, not a rename. Character
+// creation is closed, so the path is dormant — it refuses rather than quietly reaching for the old
+// key behind the migration's back.
 async function createMiniMaxCharacterImage(prompt: string, imageUrl: string) {
+  if (!CHARACTER_CREATION_OPEN) {
+    throw new Error("Character sheets are not wired to fal yet; creation is closed");
+  }
   const payload = asObject(await miniMaxFetch("/v1/image_generation", {
     method: "POST",
     body: JSON.stringify({
@@ -380,39 +385,124 @@ async function createMiniMaxCharacterImage(prompt: string, imageUrl: string) {
   };
 }
 
-async function createMiniMaxVideoTask(prompt: string, firstFrameUrl: string, duration: number) {
-  const payload = asObject(await miniMaxFetch("/v2/video_generation", {
+// ── fal ──────────────────────────────────────────────────────────────────────
+// One key for everything the show generates. Video runs on fal's queue; the writing runs on their
+// OpenAI-compatible router, so the chat calls keep the shape they already had.
+const FAL_QUEUE_BASE = "https://queue.fal.run";
+const FAL_SYNC_BASE = "https://fal.run";
+const FAL_VIDEO_MODEL = "minimax/h3-max-turbo/image-to-video";
+const FAL_CHAT_PATH = "/openrouter/router/openai/v1/chat/completions";
+// Held as vars so the host can change model without a deploy — useful precisely because these are
+// the two decisions most likely to want tuning once real footage is coming back.
+const FAL_TEXT_MODEL_DEFAULT = "openai/gpt-4o-mini";
+const FAL_VISION_MODEL_DEFAULT = "openai/gpt-4o-mini";
+
+function requireFal() {
+  const apiKey = secret.get("FAL_KEY");
+  if (!apiKey) throw new Error("FAL_KEY is not configured");
+  return apiKey;
+}
+
+function falErrorMessage(payload: unknown, status: number, raw: string) {
+  const root = asObject(payload);
+  // fal reports schema problems as a list of {loc, msg}; those are the ones worth reading in full.
+  const detail = Array.isArray(root.detail)
+    ? root.detail.map((item) => {
+      const entry = asObject(item);
+      const where = Array.isArray(entry.loc) ? entry.loc.join(".") : "";
+      return `${where}: ${cleanText(entry.msg, 200)}`;
+    }).join("; ")
+    : cleanText(root.detail, 400);
+  return cleanText(detail || root.message || raw, 500) || `fal request failed (${status})`;
+}
+
+async function falFetch(url: string, init: RequestInit = {}) {
+  const headers = new Headers(init.headers);
+  headers.set("Authorization", `Key ${requireFal()}`);
+  headers.set("Accept", "application/json");
+  if (init.body) headers.set("Content-Type", "application/json");
+  const response = await fetch(url, { ...init, headers });
+  const raw = await response.text();
+  let payload: unknown = null;
+  try {
+    payload = raw ? JSON.parse(raw) : null;
+  } catch {
+    payload = null;
+  }
+  if (!response.ok) throw new Error(falErrorMessage(payload, response.status, raw));
+  return payload;
+}
+
+// The queue hands back the URLs to poll, so they are kept rather than rebuilt: a model whose id has
+// a sub-path ("…/image-to-video") does not poll at the path it was submitted to.
+function falTaskRef(id: string, statusUrl: string, responseUrl: string) {
+  return JSON.stringify({ id, status: statusUrl, response: responseUrl });
+}
+
+function parseFalTaskRef(value: string) {
+  try {
+    const parsed = asObject(JSON.parse(value));
+    const id = cleanText(parsed.id, 200);
+    if (!id) return null;
+    return {
+      id,
+      status: cleanText(parsed.status, 500),
+      response: cleanText(parsed.response, 500),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function createFalVideoTask(prompt: string, firstFrameUrl: string, duration: number) {
+  const payload = asObject(await falFetch(`${FAL_QUEUE_BASE}/${FAL_VIDEO_MODEL}`, {
     method: "POST",
     body: JSON.stringify({
-      model: LIVE_VIDEO_MODEL,
-      content: [
-        { type: "text", text: cleanText(prompt, 6500) },
-        { type: "image_url", image_url: { url: firstFrameUrl }, role: "first_frame" },
-      ],
+      prompt: cleanText(prompt, 6500),
+      image_url: firstFrameUrl,
+      duration: String(duration),
+      // fal wants the capital P it is already written with; lowercasing it fails validation.
       resolution: LIVE_VIDEO_RESOLUTION,
-      duration,
-      ratio: "adaptive",
     }),
   }));
-  const taskIdValue = payload.task_id;
-  if (typeof taskIdValue !== "string" && typeof taskIdValue !== "number") {
-    throw new Error("MiniMax video generation returned no task_id");
+  const id = cleanText(payload.request_id, 200);
+  if (!id) throw new Error("fal returned no request_id");
+  const statusUrl = cleanText(payload.status_url, 500)
+    || `${FAL_QUEUE_BASE}/${FAL_VIDEO_MODEL}/requests/${encodeURIComponent(id)}/status`;
+  const responseUrl = cleanText(payload.response_url, 500)
+    || `${FAL_QUEUE_BASE}/${FAL_VIDEO_MODEL}/requests/${encodeURIComponent(id)}`;
+  return { id: falTaskRef(id, statusUrl, responseUrl), raw: payload };
+}
+
+// One poll answers both questions: still running, or done and here is the file.
+async function getFalVideoTask(stored: string) {
+  const ref = parseFalTaskRef(stored);
+  if (!ref) throw new Error("This clip was queued on the old provider and cannot be polled");
+  const status = asObject(await falFetch(ref.status));
+  const state = cleanText(status.status, 40).toUpperCase();
+  if (state !== "COMPLETED") return { state, payload: status };
+  return { state, payload: asObject(await falFetch(ref.response)) };
+}
+
+function falVideoStatus(state: string) {
+  if (state === "COMPLETED") return "completed";
+  if (state === "IN_PROGRESS" || state === "IN_QUEUE") return "processing";
+  return state ? state.toLowerCase() : "pending";
+}
+
+function falVideoResultUrl(payload: unknown) {
+  const root = asObject(payload);
+  const video = asObject(root.video);
+  const direct = cleanText(video.url, 800);
+  if (direct.startsWith("http")) return direct;
+  // Some fal models return the file under a differently named key; take the first URL that looks
+  // like one rather than failing on a naming difference.
+  for (const value of Object.values(root)) {
+    const nested = asObject(value);
+    const url = cleanText(nested.url, 800);
+    if (url.startsWith("http")) return url;
   }
-  return { id: String(taskIdValue), raw: payload };
-}
-
-async function getMiniMaxVideoTask(id: string) {
-  return miniMaxFetch(`/v2/query/video_generation/${encodeURIComponent(id)}`);
-}
-
-function miniMaxVideoStatus(payload: unknown) {
-  return cleanText(asObject(asObject(payload).task).status, 32).toLowerCase();
-}
-
-function miniMaxVideoResultUrl(payload: unknown) {
-  const content = asObject(asObject(asObject(payload).task).content);
-  const url = content.url;
-  return typeof url === "string" && url.startsWith("http") ? url : null;
+  return null;
 }
 
 function requireRenoise() {
@@ -863,6 +953,8 @@ async function reapStalledGenerations(matchId: number) {
       sql`created_at < datetime('now', ${`-${STALE_GENERATION_SECONDS} seconds`})`,
     ))
     .returning({ id: generations.id });
+  // Whatever a viewer asked for in those clips goes back in the queue rather than dying with them.
+  for (const row of reaped) await requeueFailedCue(row.id);
   if (reaped.length) console.log(`[reaper] freed ${reaped.length} wedged clip(s)`);
   return reaped.length;
 }
@@ -975,10 +1067,10 @@ function storyChoiceById(choiceId: string) {
 // maxChars caps what comes back. The default suits a one-line answer; a structured reply needs far
 // more room, and truncating one costs it its closing brace.
 async function miniMaxChat(system: string, user: string, maxTokens: number, maxChars = 800) {
-  const payload = asObject(await miniMaxFetch("/v1/text/chatcompletion_v2", {
+  const payload = asObject(await falFetch(`${FAL_SYNC_BASE}${FAL_CHAT_PATH}`, {
     method: "POST",
     body: JSON.stringify({
-      model: SUMMARY_MODEL,
+      model: vars.get("FAL_TEXT_MODEL") || FAL_TEXT_MODEL_DEFAULT,
       messages: [
         { role: "system", content: system },
         { role: "user", content: user },
@@ -1368,7 +1460,7 @@ function directorRequestFrom(data: JsonObject): GenerationRequest {
 // happens in startQueuedGeneration, so the viewer sees a live stage instead of waiting inside the
 // POST with nothing on screen. Video generation itself only takes ~20s and already has feedback.
 async function queueLiveGeneration(request: GenerationRequest, createdBy: string) {
-  requireMiniMax();
+  requireFal();
   const participantIds = request.participantIds.filter(Number.isInteger).slice(0, 3);
   if (participantIds.length === 0) throw new Error("Pick 1-3 contestants");
   const match = await ensureLiveMatch();
@@ -1550,7 +1642,7 @@ async function startQueuedGeneration(generation: typeof generations.$inferSelect
       : "Avoid any hard cut to a different scene, any reset, new location, new people, face morphing, or sudden costume changes.",
   ].filter(Boolean).join("\n");
 
-  const videoTask = await createMiniMaxVideoTask(taskPrompt, opening.url, generation.duration_seconds);
+  const videoTask = await createFalVideoTask(taskPrompt, opening.url, generation.duration_seconds);
   // The prompt actually sent to MiniMax is persisted too, so a finished clip can be reproduced later.
   const storedPrompt = JSON.stringify({
     promptVersion: LIVE_PROMPT_VERSION,
@@ -1568,10 +1660,10 @@ async function startQueuedGeneration(generation: typeof generations.$inferSelect
 }
 
 async function miniMaxVisionChat(system: string, text: string, imageUrl: string, maxTokens: number) {
-  const payload = asObject(await miniMaxFetch("/v1/text/chatcompletion_v2", {
+  const payload = asObject(await falFetch(`${FAL_SYNC_BASE}${FAL_CHAT_PATH}`, {
     method: "POST",
     body: JSON.stringify({
-      model: VISION_MODEL,
+      model: vars.get("FAL_VISION_MODEL") || FAL_VISION_MODEL_DEFAULT,
       messages: [
         { role: "system", content: system },
         {
@@ -1820,7 +1912,7 @@ const HOUSE_CAST_MAX_CLIPS = 20000;
 
 // How hard the show films. Rendering is the whole cost of this project, so the host can throttle it
 // from /admin-change when nobody is watching rather than having to take the site down.
-type GenerationTierKey = "live" | "idle" | "hourly";
+type GenerationTierKey = "live" | "paced" | "idle" | "hourly";
 interface GenerationTier {
   key: GenerationTierKey;
   label: string;
@@ -1835,6 +1927,10 @@ interface GenerationTier {
   // Low tiers pace the director on the same clock as the cast, so "one clip an hour" means one
   // clip an hour in total, not one per line.
   gapCoversDirector: boolean;
+  // How much the show may film of its own accord inside one gapSeconds window. Absent means the
+  // old behaviour: one clip, then wait out the whole gap.
+  houseBurst?: number;
+  directorBurst?: number;
 }
 const GENERATION_TIERS: Record<GenerationTierKey, GenerationTier> = {
   live: {
@@ -1846,6 +1942,19 @@ const GENERATION_TIERS: Record<GenerationTierKey, GenerationTier> = {
     houseSlots: 3,
     gapSeconds: 4,
     gapCoversDirector: false,
+  },
+  paced: {
+    key: "paced",
+    label: "Paced",
+    detail: "Four contestant clips and one director cut every ten minutes. Anything a viewer asks for still films at once, on top of this.",
+    // Headroom is for the room, not for the pace: a burst of viewer lines needs somewhere to go.
+    concurrent: 5,
+    directorSlots: 2,
+    houseSlots: 4,
+    gapSeconds: 600,
+    gapCoversDirector: false,
+    houseBurst: 4,
+    directorBurst: 1,
   },
   idle: {
     key: "idle",
@@ -1874,11 +1983,25 @@ function tierOf(match: { generation_tier: string }) {
 }
 
 // Every auto-queued clip counts against the low tiers' clock, whichever line asked for it.
-async function autoQueuedWithin(matchId: number, seconds: number, housOnly: boolean) {
+// Only what the show filmed of its own accord. A clip somebody asked for is not part of the pace
+// being kept — counting it would let one viewer's line push the next self-driven beat back.
+async function autoQueuedWithin(matchId: number, seconds: number, houseOnly: boolean) {
   const [row] = await db.select({ n: sql<number>`count(*)` }).from(generations)
     .where(and(
       eq(generations.match_id, matchId),
-      housOnly ? sql`${generations.created_by} like 'house:%'` : sql`(${generations.created_by} like 'house:%' or ${generations.created_by} like 'director:%')`,
+      houseOnly
+        ? eq(generations.created_by, "house:auto")
+        : sql`${generations.created_by} in ('house:auto', 'director:auto')`,
+      sql`${generations.created_at} >= datetime('now', ${`-${seconds} seconds`})`,
+    ));
+  return Number(row?.n ?? 0);
+}
+
+async function directorCutsWithin(matchId: number, seconds: number) {
+  const [row] = await db.select({ n: sql<number>`count(*)` }).from(generations)
+    .where(and(
+      eq(generations.match_id, matchId),
+      eq(generations.created_by, "director:auto"),
       sql`${generations.created_at} >= datetime('now', ${`-${seconds} seconds`})`,
     ));
   return Number(row?.n ?? 0);
@@ -2067,6 +2190,23 @@ const CHAT_PRIORITY_HOST = 2;
 // Claiming happens before the slot is secured, so a line can be taken out of the queue and then
 // lose the race for the last render slot. Left there it would be marked filmed and never filmed —
 // a viewer's message silently swallowed. Put it back instead.
+// A render can fail after the line was taken out of the queue — the video model refuses a frame,
+// a task never comes back — and until now that was the end of it: marked filmed, never filmed.
+// A real viewer's line goes back instead. Bounded, because a line the model will always refuse
+// would otherwise retry until it had spent real money on nothing.
+const CHAT_CUE_MAX_ATTEMPTS = 3;
+
+async function requeueFailedCue(generationId: number) {
+  await db.update(chatMessages)
+    .set({ consumed_at: null, generation_id: null })
+    .where(and(
+      eq(chatMessages.generation_id, generationId),
+      gte(chatMessages.priority, CHAT_PRIORITY_VIEWER),
+      lt(chatMessages.attempts, CHAT_CUE_MAX_ATTEMPTS),
+    ))
+    .catch(() => undefined);
+}
+
 async function releaseChatCue(id: number) {
   await db.update(chatMessages).set({ consumed_at: null })
     .where(eq(chatMessages.id, id)).catch(() => undefined);
@@ -2078,13 +2218,18 @@ async function viewerLineWaiting(matchId: number) {
       eq(chatMessages.match_id, matchId),
       isNull(chatMessages.consumed_at),
       gte(chatMessages.priority, CHAT_PRIORITY_VIEWER),
+      lt(chatMessages.attempts, CHAT_CUE_MAX_ATTEMPTS),
     ));
   return Number(row?.n ?? 0) > 0;
 }
 
 async function claimChatCue(matchId: number, availableIds: number[]) {
   const waiting = await db.select().from(chatMessages)
-    .where(and(eq(chatMessages.match_id, matchId), isNull(chatMessages.consumed_at)))
+    .where(and(
+      eq(chatMessages.match_id, matchId),
+      isNull(chatMessages.consumed_at),
+      lt(chatMessages.attempts, CHAT_CUE_MAX_ATTEMPTS),
+    ))
     .orderBy(desc(chatMessages.priority), chatMessages.id)
     .limit(40);
   if (!waiting.length) return null;
@@ -2109,7 +2254,7 @@ async function claimChatCue(matchId: number, availableIds: number[]) {
   const pick = rank >= CHAT_PRIORITY_HOST ? pool[0] : pool[Math.floor(Math.random() * pool.length)];
 
   const [claimed] = await db.update(chatMessages)
-    .set({ consumed_at: new Date().toISOString() })
+    .set({ consumed_at: new Date().toISOString(), attempts: sql`attempts + 1` })
     .where(and(eq(chatMessages.id, pick.id), isNull(chatMessages.consumed_at)))
     .returning();
   return claimed ?? null;
@@ -2171,7 +2316,7 @@ async function maybeSeedChat(match: typeof matches.$inferSelect) {
   const tier = chatSeedTierOf(match);
   if (tier.floor <= 0) return null;
   try {
-    requireMiniMax();
+    requireFal();
     const [waiting] = await db.select({ n: sql<number>`count(*)` }).from(chatMessages)
       .where(and(eq(chatMessages.match_id, matchId), isNull(chatMessages.consumed_at)));
     // Only speak up when the room has gone quiet; real viewers always take priority.
@@ -2428,7 +2573,7 @@ const STORY_TURN_RULES = [
 async function advanceStory(match: typeof matches.$inferSelect) {
   const state = storyStateOf(match);
   try {
-    requireMiniMax();
+    requireFal();
     // Cheap gate first. Every watching browser runs this every few seconds, and below the floor no
     // amount of chat can pull the turn forward — so do not go near the chat table to find that out.
     if (match.story_beat < STORY_BEAT_FLOOR) return null;
@@ -2588,7 +2733,7 @@ async function maybeAdvanceHouseCast(match: typeof matches.$inferSelect) {
   const matchId = match.id;
   const tier = tierOf(match);
   try {
-    requireMiniMax();
+    requireFal();
     const active = await activeGenerations(matchId);
     if (active.length >= tier.concurrent) return null;
     // Count the house line against its own ceiling, so the director does not squeeze it out.
@@ -2600,7 +2745,8 @@ async function maybeAdvanceHouseCast(match: typeof matches.$inferSelect) {
     if (Number(tally?.total ?? 0) >= HOUSE_CAST_MAX_CLIPS) return null;
     // The gap paces the show filming its own ideas. Somebody in the room asking for something is
     // not that, and making them wait out a tier's interval is the opposite of a live broadcast.
-    if (await autoQueuedWithin(matchId, tier.gapSeconds, !tier.gapCoversDirector) > 0) {
+    const selfDriven = await autoQueuedWithin(matchId, tier.gapSeconds, !tier.gapCoversDirector);
+    if (selfDriven >= (tier.houseBurst ?? 1)) {
       if (!await viewerLineWaiting(matchId)) return null;
     }
 
@@ -2670,10 +2816,15 @@ async function maybeStartDirectorClip(match: typeof matches.$inferSelect) {
   const matchId = match.id;
   const tier = tierOf(match);
   try {
-    requireMiniMax();
+    requireFal();
     const active = await activeGenerations(matchId);
     if (generationSlotError(active, "director", null, tier)) return null;
     if (tier.gapCoversDirector && await autoQueuedWithin(matchId, tier.gapSeconds, false) > 0) return null;
+    // Cuts are chained off tail frames, so without a ceiling of their own the director would answer
+    // every contestant clip — four cuts for a batch of four, not the one the tier asks for.
+    if (tier.directorBurst != null && await directorCutsWithin(matchId, tier.gapSeconds) >= tier.directorBurst) {
+      return null;
+    }
     const source = await pickDirectorSource(match);
     if (!source?.channel_participant_id || !source.thumbnail_url) return null;
     const [participant] = await db.select({ id: participants.id }).from(participants)
@@ -2716,12 +2867,14 @@ async function syncLiveGeneration(id: number) {
   try {
     if (generation.stage === "video" && generation.video_task_id) {
       if (generation.model === LIVE_VIDEO_MODEL) {
-        const videoTask = await getMiniMaxVideoTask(generation.video_task_id);
-        const status = miniMaxVideoStatus(videoTask);
-        if (status === "failed" || status === "cancelled") throw new Error("MiniMax H3 Max video generation failed");
-        if (status !== "succeeded") return { generation, providerStatus: status || "pending" };
-        const remoteUrl = miniMaxVideoResultUrl(videoTask);
-        if (!remoteUrl) throw new Error("MiniMax finished the video but returned no result URL");
+        const videoTask = await getFalVideoTask(generation.video_task_id);
+        const status = falVideoStatus(videoTask.state);
+        if (status === "failed" || status === "cancelled" || status === "error") {
+          throw new Error(`${LIVE_VIDEO_MODEL} video generation failed`);
+        }
+        if (status !== "completed") return { generation, providerStatus: status || "pending" };
+        const remoteUrl = falVideoResultUrl(videoTask.payload);
+        if (!remoteUrl) throw new Error("fal finished the video but returned no result URL");
         const stableUrl = await persistVideoResult(generation.id, remoteUrl);
         const completed = { ...generation, stage: "completed" as const, result_url: stableUrl };
         // Several viewers poll this endpoint at once. Only the request that actually flips the row
@@ -2775,6 +2928,8 @@ async function syncLiveGeneration(id: number) {
   } catch (error) {
     const message = error instanceof Error ? error.message : "Sync failed";
     await db.update(generations).set({ stage: "failed", error_message: message }).where(eq(generations.id, generation.id));
+    // The line that asked for this shot is not spent just because the render was.
+    await requeueFailedCue(generation.id);
     return { error: message, generation: { ...generation, stage: "failed" }, failed: true };
   }
 }
@@ -2785,7 +2940,7 @@ function liveGenerationErrorStatus(error: unknown) {
   if (name === "BadRequestError" || message.startsWith("Pick ")) return 400;
   if (name === "ConflictError") return 409;
   if (name === "NotFoundError") return 404;
-  if (message.includes("MINIMAX_API_KEY")) return 503;
+  if (message.includes("FAL_KEY") || message.includes("MINIMAX_API_KEY")) return 503;
   if (message.includes("not currently offer") || message.includes("must be enabled")) return 503;
   return 502;
 }
@@ -3208,7 +3363,7 @@ const app = new Hono()
     if (!avatarPath || !avatarPath.startsWith("avatars/")) return c.json({ error: "Upload a valid photo of yourself first" }, 400);
     if (data.creditApproved !== true) return c.json({ error: "Confirm that this will call the MiniMax API" }, 400);
     try {
-      requireMiniMax();
+      requireFal();
     } catch {
       return c.json({ error: "The MiniMax API key is not configured, so characters cannot be created" }, 503);
     }
@@ -3524,7 +3679,7 @@ const app = new Hono()
   })
   .get("/api/director/status", async (c) => {
     await requireDirector();
-    return c.json({ ready: Boolean(secret.get("MINIMAX_API_KEY")), model: LIVE_VIDEO_MODEL, provider: "minimax" });
+    return c.json({ ready: Boolean(secret.get("FAL_KEY")), model: LIVE_VIDEO_MODEL, provider: "fal" });
   })
   .get("/api/director/minimax/probe", async (c) => {
     await requireDirector();

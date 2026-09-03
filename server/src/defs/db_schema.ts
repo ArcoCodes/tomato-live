@@ -24,7 +24,7 @@ export const matches = sqliteTable("matches", {
   viewers: integer("viewers").notNull().default(0),
   // How hard the show films: how many clips may render at once and how long to wait between them.
   // The host switches this from /admin-change when nobody is watching.
-  generation_tier: text("generation_tier", { enum: ["live", "idle", "hourly"] }).notNull().default("live"),
+  generation_tier: text("generation_tier", { enum: ["live", "paced", "idle", "hourly"] }).notNull().default("live"),
   // How talkative the seeded audience is. Separate from the render tier: chat is what fills the
   // queue, rendering is what drains it.
   chat_seed_tier: text("chat_seed_tier", { enum: ["busy", "normal", "quiet", "off"] }).notNull().default("normal"),
@@ -212,6 +212,11 @@ export const chatMessages = sqliteTable("chat_messages", {
   // a real viewer is 1, the host is 2 — so the people actually watching always outrank our own
   // filler, and the host's line is never left in the queue.
   priority: integer("priority").notNull().default(0),
+  // How many times this line has been sent to the cameras. A render can fail — the video model
+  // refuses a frame, a task never comes back — and a viewer's line must not disappear with it, so a
+  // failed one goes back in the queue. Bounded, because a line the model will always refuse would
+  // otherwise retry until it had spent real money.
+  attempts: integer("attempts").notNull().default(0),
   // Claimed atomically when the show picks this message, so two concurrent pickers cannot film the
   // same message twice.
   consumed_at: text("consumed_at"),
