@@ -2090,7 +2090,12 @@ async function maybeSeedChat(match: typeof matches.$inferSelect) {
     ));
     if (!roster.length) return null;
     const names = roster.map((item) => item.display_name);
-    const timeline = await recentSummaries(matchId, 4).catch(() => [] as string[]);
+    const story = storyStateOf(match);
+    // Written off the recap alone, the room turned into an echo of the show: every seeded line was
+    // another variation of whatever the last four clips had been about, and those lines then drove
+    // the next clips. The people actually watching are the way out of that loop, so they are most
+    // of what a seeded viewer is made of.
+    const room = await recentRoomLines(matchId, 25, 12).catch(() => [] as string[]);
 
     const written = await miniMaxChat(
       [
@@ -2101,12 +2106,24 @@ async function maybeSeedChat(match: typeof matches.$inferSelect) {
         "- You may name two of them in one message if you want them in the same shot.",
         "- Sound like a person watching a stream at 1am: casual, lowercase, blunt, sometimes funny.",
         "- Never sound like a narrator, an assistant, or an announcer. No 'let us', no 'perhaps', no stage directions.",
-        "- It has to be a doable physical action on a storm-hit island, not a feeling or a compliment.",
+        `- It has to be something they could physically do where they actually are: ${story.setting}.`,
+        room.length
+          ? "- The real people in the room are most of who you are. Take their subject, their mood and the way they type; want what they want. The recap is background you glance at, never the thing you retell — do not simply restate the last shot."
+          : "- The room is quiet, so pick something the recap has not already covered rather than narrating it back.",
+        // Following the room cannot mean multiplying its worst line: one viewer's insult would
+        // otherwise come back as a chorus of them, and every one of those is a clip cue.
+        "- Follow the room, not its worst line. Never repeat an insult, a sexual remark or abuse aimed at anyone. Take what that person seems to want to see happen and ask for that instead; if there is nothing, ignore them.",
         "Output the message only.",
       ].join("\n"),
-      timeline.length
-        ? `What just happened:\n${timeline.map((line, i) => `${i + 1}. ${line}`).join("\n")}`
-        : "The broadcast is just starting.",
+      [
+        room.length
+          ? `What the real people watching are saying, newest last — this is most of what you are:\n${room.map((line) => `- ${line}`).join("\n")}`
+          : "Nobody real has said anything for a while.",
+        // The current chapter, not the last few clips: clips are filmed behind the story, so their
+        // summaries describe a place the show has already left and the room ends up shouting about
+        // a flooded tunnel while the contestants stand on a cliff.
+        `\nBackground — where they are right now: ${story.setting} (${story.clock}). They are trying to ${story.goal}.`,
+      ].join("\n"),
       chatBudget(120),
     );
 
@@ -2201,6 +2218,21 @@ function parseModelJson(raw: string) {
 
 // Viewer lines since the last turn, oldest first. Seeded chatter is deliberately excluded: the point
 // of this list is to let the people actually in the room steer, and the seeds are ours.
+// The room as the seeded chat hears it: recent real lines only. Older ones would have the fake
+// viewers still arguing about a situation the show left an hour ago.
+async function recentRoomLines(matchId: number, minutes: number, limit: number) {
+  const rows = await db.select({ name: chatMessages.display_name, body: chatMessages.body })
+    .from(chatMessages)
+    .where(and(
+      eq(chatMessages.match_id, matchId),
+      sql`${chatMessages.device_id} not like 'seed:%'`,
+      sql`${chatMessages.created_at} >= datetime('now', ${`-${minutes} minutes`})`,
+    ))
+    .orderBy(desc(chatMessages.id))
+    .limit(limit);
+  return rows.map((row) => `${row.name}: ${row.body}`).reverse();
+}
+
 async function viewerPushSince(matchId: number, since: string | null) {
   const rows = await db.select({ name: chatMessages.display_name, body: chatMessages.body })
     .from(chatMessages)
@@ -2218,11 +2250,12 @@ async function viewerPushSince(matchId: number, since: string | null) {
 // alone makes the showrunner think in beats too and hand back another inch of the same rock. The
 // chapter list is the only view of the story at the size this decision is made at.
 async function recentChapters(matchId: number, limit: number) {
-  const rows = await db.select({ title: matchEvents.title }).from(matchEvents)
+  const rows = await db.select({ title: matchEvents.title, detail: matchEvents.detail })
+    .from(matchEvents)
     .where(and(eq(matchEvents.match_id, matchId), eq(matchEvents.kind, "world")))
     .orderBy(desc(matchEvents.id))
     .limit(limit);
-  return rows.map((row) => row.title).reverse();
+  return rows.reverse();
 }
 
 // The island, as places a camera can be. Handed to the showrunner when it has to move: asked in the
@@ -2296,7 +2329,13 @@ async function advanceStory(match: typeof matches.$inferSelect) {
 
     // Few enough that the last few beats orient the turn without dictating its size.
     const timeline = await recentSummaries(match.id, 4).catch(() => [] as string[]);
-    const chapters = await recentChapters(match.id, 8).catch(() => [] as string[]);
+    const chapterRows = await recentChapters(match.id, 8).catch(() => [] as Array<{ title: string; detail: string }>);
+    const chapters = chapterRows.map((row) => row.title);
+    // A chapter's detail line opens with its clock, so this counts how long the show has been stuck
+    // at one hour of one day. Twenty-four chapters ran without leaving the night of day one, and a
+    // storm that never breaks makes every location look like the same wet rock.
+    const stalled = chapterRows.filter((row) => row.detail.startsWith(state.clock)).length;
+    const mustAdvanceTime = stalled >= 3;
     // Chapters only advance on a real move, so several stretches carrying the same number means the
     // show has been picking at one situation. Asking nicely does not shift it — this does.
     const held = chapters.filter((title) => title.startsWith(`Chapter ${state.chapter} `)).length;
@@ -2322,6 +2361,16 @@ async function advanceStory(match: typeof matches.$inferSelect) {
         pushes.length
           ? `\nThe viewers watching right now have been saying:\n${pushes.map((line) => `- ${line}`).join("\n")}\nTake them seriously — they are steering this show.`
           : "\nThe room is quiet, so this turn is yours to choose.",
+        mustAdvanceTime
+          ? [
+            "\nTIME HAS TO MOVE, and that is not optional either.",
+            `It has been "${state.clock}" for several stretches now. Push the clock to the next real marker and let the weather turn with it.`,
+            /night|dark|midnight|small hours/i.test(state.clock)
+              ? "It has been dark for a long time. This turn brings daylight — first light, morning or full sun — not another hour of night."
+              : "Move to a different part of the day: afternoon light, dusk, or into the night.",
+            "Weather that never breaks makes every place look identical. If a storm has been running, this is where it blows itself out, or where the next one is still hours off.",
+          ].join("\n")
+          : "",
         mustMove
           ? [
             "\nTHIS TURN IS A HARD MOVE, and that is not optional.",
