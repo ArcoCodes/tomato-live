@@ -52,39 +52,13 @@ export interface ChannelTab {
   isMark?: boolean;
 }
 
-/** The two real stages of the pipeline, so the bar advances on fact rather than on a timer alone. */
-function GenerationProgress({ stage }: { stage: "queued" | "keyframe" | "video" }) {
-  const writing = stage !== "video";
-  return (
-    <div className="gen-progress">
-      <div className="gen-progress-rail">
-        <i
-          // Re-keyed per stage so the crawl restarts from the new stage's baseline.
-          key={writing ? "writing" : "rendering"}
-          style={{
-            "--from": writing ? "6%" : "52%",
-            "--to": writing ? "48%" : "94%",
-            "--dur": writing ? "14s" : "24s",
-          } as React.CSSProperties}
-        />
-      </div>
-      <div className="gen-progress-copy">
-        <strong>{writing ? "Acquiring signal" : "Feed incoming"}</strong>
-        <span>{writing ? "The cameras on the island are still lining up" : "Footage is coming back from the island, about 20s"}</span>
-      </div>
-    </div>
-  );
-}
-
-export function Broadcast({ clips, participants, channels, activeChannel, onSelectChannel, myPendingStage, jumpRequest, onJumpHandled, archiveOpen }: {
+export function Broadcast({ clips, participants, channels, activeChannel, onSelectChannel, jumpRequest, onJumpHandled, archiveOpen }: {
   clips: BroadcastClip[];
   /** Needed to show whose clip each archive card is, by character sheet rather than by name. */
   participants: Participant[];
   channels: ChannelTab[];
   activeChannel: string;
   onSelectChannel: (key: string) => void;
-  /** This viewer's own generation, if one is running — it gets a prominent bar, not a small label. */
-  myPendingStage?: "queued" | "keyframe" | "video";
   /** A clip the chat asked to show. Cleared once played so the same request cannot re-fire. */
   jumpRequest?: number | null;
   onJumpHandled?: () => void;
@@ -517,7 +491,6 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
             </div>
           ) : null}
           <div className="scan-lines" />
-          {myPendingStage ? <GenerationProgress stage={myPendingStage} /> : null}
           {/* The timeline summary doubles as a caption, so the show reads even with the sound off. */}
           {clip?.summary && firstFrameShown ? (
             <div className="broadcast-subtitle">

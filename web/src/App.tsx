@@ -216,8 +216,6 @@ function App() {
     }));
   }, [control?.participantId, live]);
 
-  const myPendingStage = (live?.pending_generations ?? [])
-    .find((item) => item.channel_participant_id === activeId)?.stage;
 
   const channelClips = useMemo(
     () => (live?.clips ?? []).filter((clip) => channelKeyFor(clip) === activeChannel),
@@ -342,7 +340,6 @@ function App() {
           channels={channels}
           activeChannel={activeChannel}
           onSelectChannel={setActiveChannel}
-          myPendingStage={myPendingStage}
           jumpRequest={jumpRequest}
           onJumpHandled={() => setJumpRequest(null)}
           archiveOpen={archiveOpen}
