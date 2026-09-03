@@ -340,7 +340,7 @@ fieldset { border: 0; padding: 0; margin: 0 0 20px; }
   /* The archive and the roster are a lean-back page, not a live room. */
   .clip-history, .roster-panel { display: none; }
   /* Chat rides on the picture, bottom-anchored, the way a live room reads. */
-  .chat-panel { position: absolute; left: 0; right: 0; bottom: 0; z-index: 7; display: flex; max-height: 52%; min-height: 0; background: none; border-radius: 0; box-shadow: none; overflow: visible; pointer-events: none; }
+  .chat-panel { position: absolute; left: 0; right: 0; bottom: 0; z-index: 7; display: flex; max-height: 40%; min-height: 0; background: none; border-radius: 0; box-shadow: none; overflow: visible; pointer-events: none; }
   .chat-panel .panel-heading { display: none; }
   .chat-list { padding: 10px 12px; gap: 9px; }
   .chat-compose { padding: 8px 10px 10px; }
@@ -451,11 +451,11 @@ fieldset { border: 0; padding: 0; margin: 0 0 20px; }
 @media (max-width: 760px) {
   /* Chat sits on the picture, so it reads light-on-dark and fades out at the top rather than
      ending on a hard edge. */
-  .chat-list { flex: 1 1 auto; min-height: 0; padding: 0 14px 6px; gap: 11px; justify-content: flex-end; pointer-events: auto; overflow-y: auto; background: linear-gradient(transparent, rgb(12 9 7 / .5) 26%, rgb(12 9 7 / .74)); -webkit-mask-image: linear-gradient(transparent, #000 14%); mask-image: linear-gradient(transparent, #000 14%); }
+  .chat-list { flex: 1 1 auto; min-height: 0; padding: 0 14px 4px; gap: 9px; justify-content: flex-end; pointer-events: auto; overflow-y: auto; background: linear-gradient(transparent, rgb(12 9 7 / .5) 26%, rgb(12 9 7 / .74)); -webkit-mask-image: linear-gradient(transparent, #000 14%); mask-image: linear-gradient(transparent, #000 14%); }
   .chat-who { color: rgb(253 250 248 / .6); font-size: 10px; }
   .chat-line p { color: #fdfaf8; font-size: 14px; line-height: 1.5; text-shadow: 0 1px 4px rgb(0 0 0 / .65); }
   .chat-line.is-filmed p { color: rgb(253 250 248 / .68); }
-  .chat-jump { background: rgb(255 255 255 / .16); color: #fff; backdrop-filter: blur(6px); }
+  .chat-jump { margin-top: 3px; padding: 2px 9px; font-size: 9px; background: rgb(255 255 255 / .16); color: #fff; backdrop-filter: blur(6px); }
   .chat-jump:hover { background: var(--brand); }
   .chat-line em { background: rgb(255 255 255 / .16); color: #fff; }
   .chat-empty { color: rgb(253 250 248 / .72); text-shadow: 0 1px 4px rgb(0 0 0 / .6); font-size: 12px; padding: 0 8px; }
