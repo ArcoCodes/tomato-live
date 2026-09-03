@@ -25,6 +25,9 @@ export const matches = sqliteTable("matches", {
   // How hard the show films: how many clips may render at once and how long to wait between them.
   // The host switches this from /admin-change when nobody is watching.
   generation_tier: text("generation_tier", { enum: ["live", "idle", "hourly"] }).notNull().default("live"),
+  // How talkative the seeded audience is. Separate from the render tier: chat is what fills the
+  // queue, rendering is what drains it.
+  chat_seed_tier: text("chat_seed_tier", { enum: ["busy", "normal", "quiet", "off"] }).notNull().default("normal"),
   started_at: text("started_at").notNull().default(sql`(current_timestamp)`),
   created_at: text("created_at").notNull().default(sql`(current_timestamp)`),
 }, (table) => [

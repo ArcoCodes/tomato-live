@@ -377,6 +377,7 @@ fieldset { border: 0; padding: 0; margin: 0 0 20px; }
 .admin-stats span { color: var(--muted); font: 9px var(--utility); letter-spacing: .08em; }
 .admin-stats strong { font: 17px var(--display); font-weight: 400; }
 .admin-tiers { display: flex; flex-direction: column; gap: 10px; }
+.admin-section-title { margin: 6px 0 -4px; font: 15px var(--utility); letter-spacing: .06em; color: var(--muted); font-weight: 600; }
 .admin-tier { display: flex; flex-direction: column; gap: 7px; padding: 18px 20px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); text-align: left; cursor: pointer; transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease; }
 .admin-tier:hover:not(:disabled) { border-color: var(--line-strong); transform: translateY(-1px); box-shadow: var(--sh-2); }
 .admin-tier:disabled { cursor: default; opacity: .7; }

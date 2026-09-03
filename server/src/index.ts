@@ -1797,23 +1797,67 @@ const CHAT_SEED_HANDLES = [
   "kaito92", "mira_", "notdave", "eelsoup", "grimjr", "pixel_hana", "th3orist", "mossy",
   "vantablack", "roachking", "sundae", "bugbear", "nine_lives", "orbital", "kettle",
 ];
-const CHAT_SEED_QUEUE_FLOOR = 2;
-const CHAT_SEED_GAP_SECONDS = 45;
+// How talkative the room is. The floor doubles as the queue depth: seeding stops once that many
+// lines are waiting, so a chatty tier fills the queue faster than a slow render tier drains it.
+type ChatSeedTierKey = "busy" | "normal" | "quiet" | "off";
+interface ChatSeedTier {
+  key: ChatSeedTierKey;
+  label: string;
+  detail: string;
+  floor: number;
+  gapSeconds: number;
+}
+const CHAT_SEED_TIERS: Record<ChatSeedTierKey, ChatSeedTier> = {
+  busy: {
+    key: "busy",
+    label: "Busy",
+    detail: "Up to 5 lines waiting, a new one every 12s. The room feels packed.",
+    floor: 5,
+    gapSeconds: 12,
+  },
+  normal: {
+    key: "normal",
+    label: "Normal",
+    detail: "Up to 2 lines waiting, a new one every 45s.",
+    floor: 2,
+    gapSeconds: 45,
+  },
+  quiet: {
+    key: "quiet",
+    label: "Quiet",
+    detail: "One line waiting at most, and only every 3 minutes.",
+    floor: 1,
+    gapSeconds: 180,
+  },
+  off: {
+    key: "off",
+    label: "Off",
+    detail: "Nobody is seeded. Only real viewers speak, and the show falls back to its own cues.",
+    floor: 0,
+    gapSeconds: 0,
+  },
+};
+
+function chatSeedTierOf(match: { chat_seed_tier: string }) {
+  return CHAT_SEED_TIERS[match.chat_seed_tier as ChatSeedTierKey] ?? CHAT_SEED_TIERS.normal;
+}
 
 async function maybeSeedChat(match: typeof matches.$inferSelect) {
   const matchId = match.id;
+  const tier = chatSeedTierOf(match);
+  if (tier.floor <= 0) return null;
   try {
     requireMiniMax();
     const [waiting] = await db.select({ n: sql<number>`count(*)` }).from(chatMessages)
       .where(and(eq(chatMessages.match_id, matchId), isNull(chatMessages.consumed_at)));
     // Only speak up when the room has gone quiet; real viewers always take priority.
-    if (Number(waiting?.n ?? 0) >= CHAT_SEED_QUEUE_FLOOR) return null;
+    if (Number(waiting?.n ?? 0) >= tier.floor) return null;
 
     const [recent] = await db.select({ n: sql<number>`count(*)` }).from(chatMessages)
       .where(and(
         eq(chatMessages.match_id, matchId),
         sql`${chatMessages.device_id} like 'seed:%'`,
-        sql`${chatMessages.created_at} >= datetime('now', ${`-${CHAT_SEED_GAP_SECONDS} seconds`})`,
+        sql`${chatMessages.created_at} >= datetime('now', ${`-${tier.gapSeconds} seconds`})`,
       ));
     if (Number(recent?.n ?? 0) > 0) return null;
 
@@ -1856,15 +1900,20 @@ async function maybeSeedChat(match: typeof matches.$inferSelect) {
     }
 
     const handle = CHAT_SEED_HANDLES[Math.floor(Math.random() * CHAT_SEED_HANDLES.length)];
-    const [row] = await db.insert(chatMessages).values({
-      match_id: matchId,
-      user_id: "",
-      device_id: `seed:${handle}`,
-      display_name: handle,
-      body,
-      mentions: JSON.stringify(mentions),
-    }).returning();
-    return row;
+    // The gap was checked before the model call, which takes seconds — long enough for a second
+    // heartbeat to pass the same check and post a twin. Re-checking it inside the insert is what
+    // actually holds the interval: the loser writes nothing.
+    const inserted = await db.run(sql`
+      insert into chat_messages (match_id, user_id, device_id, display_name, body, mentions)
+      select ${matchId}, '', ${`seed:${handle}`}, ${handle}, ${body}, ${JSON.stringify(mentions)}
+      where not exists (
+        select 1 from chat_messages
+        where match_id = ${matchId}
+          and device_id like 'seed:%'
+          and created_at >= datetime('now', ${`-${tier.gapSeconds} seconds`})
+      )
+    `);
+    return inserted;
   } catch (error) {
     // A quiet room is better than a broken heartbeat.
     console.error("[seed] failed", error instanceof Error ? error.message : String(error));
@@ -2161,6 +2210,7 @@ const app = new Hono()
     return c.json({
       current: tierOf(match).key,
       tiers: Object.values(GENERATION_TIERS),
+      chatSeed: { current: chatSeedTierOf(match).key, tiers: Object.values(CHAT_SEED_TIERS) },
       running: inFlight.length,
       houseUsed: Number(houseTally?.n ?? 0),
       houseLimit: HOUSE_CAST_MAX_CLIPS,
@@ -2178,6 +2228,15 @@ const app = new Hono()
         })),
       },
     });
+  })
+  .post("/api/admin/chat-seed-tier", async (c) => {
+    if (!isHostAccount()) return c.json({ error: "This account has no host permission" }, 403);
+    const data = asObject(await c.req.json().catch(() => ({})));
+    const key = cleanText(data.tier, 16) as ChatSeedTierKey;
+    if (!CHAT_SEED_TIERS[key]) return c.json({ error: "Unknown chat tier" }, 400);
+    const match = await ensureLiveMatch();
+    await db.update(matches).set({ chat_seed_tier: key }).where(eq(matches.id, match.id));
+    return c.json({ current: key, message: `Seeded chat set to ${CHAT_SEED_TIERS[key].label}` });
   })
   .post("/api/admin/generation-tier", async (c) => {
     if (!isHostAccount()) return c.json({ error: "This account has no host permission" }, 403);

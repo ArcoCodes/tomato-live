@@ -29,9 +29,18 @@ interface SelfDriven {
   cast: string[];
 }
 
+interface SeedTier {
+  key: string;
+  label: string;
+  detail: string;
+  floor: number;
+  gapSeconds: number;
+}
+
 interface TierState {
   current: string;
   tiers: Tier[];
+  chatSeed: { current: string; tiers: SeedTier[] };
   running: number;
   houseUsed: number;
   houseLimit: number;
@@ -86,6 +95,27 @@ export function AdminChange() {
     const timer = window.setInterval(() => void load(), 6000);
     return () => window.clearInterval(timer);
   }, [load, isAuthenticated]);
+
+  async function pickSeed(key: string) {
+    if (busy || state?.chatSeed?.current === key) return;
+    setBusy(key);
+    setNote("");
+    try {
+      const response = await client.api.fetch("/api/admin/chat-seed-tier", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tier: key }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Could not switch");
+      setNote(result.message ?? "Switched");
+      await load();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not switch");
+    } finally {
+      setBusy("");
+    }
+  }
 
   async function pick(key: string) {
     if (busy || state?.current === key) return;
@@ -157,6 +187,32 @@ export function AdminChange() {
               </button>
             ))}
           </div>
+
+          {state.chatSeed ? (
+            <>
+              <h2 className="admin-section-title">Seeded chat</h2>
+              <div className="admin-tiers">
+                {state.chatSeed.tiers.map((tier) => (
+                  <button
+                    type="button"
+                    key={tier.key}
+                    className={tier.key === state.chatSeed.current ? "admin-tier is-current" : "admin-tier"}
+                    disabled={Boolean(busy)}
+                    onClick={() => void pickSeed(tier.key)}
+                  >
+                    <span className="admin-tier-top">
+                      <strong>{tier.label}</strong>
+                      {tier.key === state.chatSeed.current ? <em>ACTIVE</em> : null}
+                    </span>
+                    <p>{tier.detail}</p>
+                    <span className="admin-tier-meta">
+                      {tier.floor > 0 ? `queue floor ${tier.floor} · one every ${tier.gapSeconds}s` : "no seeded lines"}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </>
+          ) : null}
 
           <section className="admin-queue">
             <h2>Chat queue</h2>

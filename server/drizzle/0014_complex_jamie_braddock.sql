@@ -1,0 +1,1 @@
+ALTER TABLE `matches` ADD `chat_seed_tier` text DEFAULT 'normal' NOT NULL;
