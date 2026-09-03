@@ -5,7 +5,6 @@ import { DirectorDialog } from "@/components/DirectorDialog";
 import { JoinDialog } from "@/components/JoinDialog";
 import { ChatRoom } from "@/components/ChatRoom";
 import { LoginDialog } from "@/components/LoginDialog";
-import { Roster } from "@/components/Roster";
 import { ViewerCount } from "@/components/ViewerCount";
 import { useAuth } from "@/hooks/useAuth";
 import { useTailFrameHarvester } from "@/hooks/useTailFrameHarvester";
@@ -337,7 +336,6 @@ function App() {
       </header>
 
       <main className="live-grid">
-        <Roster participants={live.participants} selectedId={control?.participantId} />
         <Broadcast
           clips={channelClips}
           participants={live.participants}

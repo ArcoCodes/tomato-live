@@ -2788,7 +2788,9 @@ const app = new Hono()
           eq(participants.match_id, match.id),
           or(isNotNull(participants.character_draft_id), eq(participants.is_system, true)),
         ))
-        .orderBy(desc(participants.score)),
+        // Seeding order, not score. Ranking them meant the cast reshuffled itself mid-broadcast
+        // every time someone acted, and a viewer looking for one contestant had to find them again.
+        .orderBy(participants.id),
       db.select().from(matchEvents).where(eq(matchEvents.match_id, match.id)).orderBy(desc(matchEvents.id)).limit(50),
       db.select().from(generations).where(and(eq(generations.match_id, match.id), eq(generations.stage, "completed"))).orderBy(desc(generations.id)).limit(60),
       db.select().from(generations)
