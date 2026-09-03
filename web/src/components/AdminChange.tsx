@@ -41,6 +41,8 @@ interface TierState {
   current: string;
   tiers: Tier[];
   chatSeed: { current: string; tiers: SeedTier[] };
+  realViewers: number;
+  audience: { synthetic: number; windowSeconds: number };
   running: number;
   houseUsed: number;
   houseLimit: number;
@@ -167,6 +169,13 @@ export function AdminChange() {
             <div><span>CURRENT TIER</span><strong>{state.tiers.find((item) => item.key === state.current)?.label ?? state.current}</strong></div>
             <div><span>RENDERING</span><strong>{state.running} clips</strong></div>
             <div><span>CAST LINE TOTAL</span><strong>{state.houseUsed} / {state.houseLimit}</strong></div>
+            {state.audience ? (
+              <div>
+                <span>REAL VIEWERS</span>
+                <strong>{state.realViewers}</strong>
+                <small>{state.realViewers + state.audience.synthetic} on air · seen in the last {state.audience.windowSeconds}s</small>
+              </div>
+            ) : null}
           </div>
 
           <div className="admin-tiers">

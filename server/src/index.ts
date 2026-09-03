@@ -1701,13 +1701,18 @@ function syntheticAudience(now = Date.now()) {
   return Math.max(120, Math.round(SYNTHETIC_AUDIENCE_CENTRE + drift));
 }
 
-async function countWatching(matchId: number) {
+// Browsers actually present. The admin page reads this one; the broadcast adds the synthetic crowd.
+async function countRealWatching(matchId: number) {
   const [row] = await db.select({ n: sql<number>`count(*)` }).from(viewerPresence)
     .where(and(
       eq(viewerPresence.match_id, matchId),
       sql`${viewerPresence.last_seen} >= datetime('now', ${`-${VIEWER_PRESENCE_WINDOW_SECONDS} seconds`})`,
     ));
-  return Number(row?.n ?? 0) + syntheticAudience();
+  return Number(row?.n ?? 0);
+}
+
+async function countWatching(matchId: number) {
+  return await countRealWatching(matchId) + syntheticAudience();
 }
 
 const CHAT_MAX_CHARS = 140;
@@ -2251,6 +2256,12 @@ const app = new Hono()
       current: tierOf(match).key,
       tiers: Object.values(GENERATION_TIERS),
       chatSeed: { current: chatSeedTierOf(match).key, tiers: Object.values(CHAT_SEED_TIERS) },
+      // Split out, because the number on the broadcast is not the number of people there.
+      audience: (() => {
+        const synthetic = syntheticAudience();
+        return { synthetic, windowSeconds: VIEWER_PRESENCE_WINDOW_SECONDS };
+      })(),
+      realViewers: await countRealWatching(match.id),
       running: inFlight.length,
       houseUsed: Number(houseTally?.n ?? 0),
       houseLimit: HOUSE_CAST_MAX_CLIPS,
