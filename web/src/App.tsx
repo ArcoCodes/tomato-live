@@ -13,6 +13,10 @@ import { client } from "@/lib/edgespark";
 import type { BroadcastClip, LinkOffer, LiveData, PlayerControl } from "@/types/live";
 
 const DIRECTOR_CHANNEL = "director";
+
+// Same source and medium the unlock links already use, so Renoise sees one campaign; utm_content is
+// what separates this header button from those.
+const RENOISE_URL = "https://renoise.ai/?utm_medium=renoiselive&utm_source=tomato-renoise-live&utm_content=join-button";
 // Mirrors CHARACTER_CREATION_OPEN on the server; the endpoint refuses regardless, this just keeps
 // viewers out of a flow that would fail at the end.
 const CHARACTER_CREATION_OPEN = false;
@@ -331,7 +335,21 @@ function App() {
           />
           {/* Manual cuts are a host tool: the director channel advances on its own. */}
           {isHost ? <button className="text-action" onClick={openDirector}>Cut next</button> : null}
-          <button className="join-action" onClick={openJoin}>{myParticipant ? "My contestant" : "Join"}<span>↗</span></button>
+          {/* Character creation is closed, so for everyone without a contestant this button was a
+              dead end that only said "coming soon". It sends them to Renoise instead, tagged so the
+              header placement can be told apart from the unlock links in analytics. */}
+          {myParticipant
+            ? <button className="join-action" onClick={openJoin}>My contestant<span>↗</span></button>
+            : (
+              <a
+                className="join-action"
+                href={RENOISE_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Join<span>↗</span>
+              </a>
+            )}
         </div>
       </header>
 
