@@ -610,9 +610,6 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
                 {item.id === latestClipId ? <em>NEW</em> : null}
               </span>
               <span className="clip-meta">
-                {/* When it aired, not a position. A sequence number counted from what is loaded, and
-                    every label on screen jumped by ten each time a page of history arrived. */}
-                <strong>{clipClock(item.created_at)}</strong>
                 <small>{item.duration_seconds}s</small>
               </span>
             </button>
