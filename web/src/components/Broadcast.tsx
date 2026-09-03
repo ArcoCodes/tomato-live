@@ -27,6 +27,14 @@ function shortSrc(url: string) {
   }
 }
 
+// SQLite hands back "YYYY-MM-DD HH:MM:SS" in UTC, which Safari refuses to parse as-is. Normalising
+// it is what makes the clock read correctly in the viewer's own timezone.
+function clipClock(createdAt: string) {
+  const parsed = new Date(`${createdAt.replace(" ", "T")}${/[Zz]|[+-]\d\d:?\d\d$/.test(createdAt) ? "" : "Z"}`);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
 const SOUND_KEY = "tomato-live-sound";
 
 // Sound is on unless the viewer turned it off. Whether it can actually play is a separate question
@@ -494,7 +502,10 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
           {/* The timeline summary doubles as a caption, so the show reads even with the sound off. */}
           {clip?.summary && firstFrameShown ? (
             <div className="broadcast-subtitle">
-              <span>{activeChannel === "director" ? "LIVE COMMENTARY" : "FIELD LOG"}</span>
+              <span>
+                {activeChannel === "director" ? "LIVE COMMENTARY" : "FIELD LOG"}
+                <time>{clipClock(clip.created_at)}</time>
+              </span>
               <p>{clip.summary}</p>
             </div>
           ) : null}
