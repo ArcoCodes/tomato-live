@@ -229,6 +229,21 @@ export const chatMessages = sqliteTable("chat_messages", {
   index("chat_device_idx").on(table.match_id, table.device_id),
 ]);
 
+// Fleet-wide mutual exclusion. The show has no scheduler and the runtime has no KV, so the only
+// thing every isolate can agree on is a row: whoever writes `key` inside its window owns the work
+// until `until_ms` passes. In-memory gates cannot do this — they are per isolate, and a hundred
+// browsers spread over a dozen PoPs each got their own.
+//
+// TODO(deploy): the `edgespark` CLI was unavailable when this table was added, so
+// drizzle/0021_runtime_leases.sql and its _journal.json entry were hand-written and
+// drizzle/meta/0021_snapshot.json does not exist. Run `edgespark db generate` before deploy to
+// regenerate the meta snapshots, or the next generated migration will diff against idx 20.
+export const runtimeLeases = sqliteTable("runtime_leases", {
+  key: text("key").primaryKey(),
+  holder: text("holder").notNull(),
+  until_ms: integer("until_ms").notNull(),
+});
+
 export const generations = sqliteTable("generations", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   match_id: integer("match_id").notNull().references(() => matches.id),

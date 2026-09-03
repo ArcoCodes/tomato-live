@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActionBar } from "@/components/ActionBar";
 import { Broadcast, type ChannelTab } from "@/components/Broadcast";
 import { DirectorDialog } from "@/components/DirectorDialog";
@@ -28,6 +28,16 @@ function channelKeyFor(clip: BroadcastClip) {
 
 const CONTROLS_KEY = "tomato-live-controls";
 const LEGACY_CONTROL_KEY = "tomato-live-control";
+
+// The heartbeat cadence when the feed is healthy, how far it backs off while the server is
+// struggling, and how long a single request may hang before it is cut loose. The old fixed
+// setInterval kept firing regardless of whether the last request had returned, so a slow server
+// meant an ever-growing pile of pending requests — which is what took the whole tab down.
+const LIVE_POLL_MS = 9000;
+const LIVE_POLL_MAX_MS = 60000;
+const LIVE_TIMEOUT_MS = 12000;
+const SYNC_POLL_MS = 2500;
+const SYNC_TIMEOUT_MS = 8000;
 
 function isControl(value: unknown): value is PlayerControl {
   const candidate = value as PlayerControl | null;
@@ -99,23 +109,80 @@ function App() {
   const [activeChannel, setActiveChannel] = useState(DIRECTOR_CHANNEL);
   const { user, isAuthenticated, signOut } = useAuth();
 
-  const refresh = useCallback(async (quiet = false) => {
-    try {
-      // The allowance on the payload is this browser's, so the id has to ride along.
-      const response = await client.api.fetch("/api/public/live", { headers: deviceHeaders });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "The live feed is unavailable");
-      setLive(result);
-      setError("");
-    } catch (cause) {
-      if (!quiet) setError(cause instanceof Error ? cause.message : "The live feed is unavailable");
-    }
+  // Single-flight: while a live request is on the wire, every caller — the poll, a chat send, a
+  // tail-frame landing — shares that request instead of stacking a new one behind it.
+  const liveInFlightRef = useRef<Promise<boolean> | null>(null);
+  // The version of the payload this tab already holds. Sent back as If-None-Match so an unchanged
+  // feed costs a 304 — no body, no JSON parse, no re-render.
+  const liveEtagRef = useRef<string | null>(null);
+
+  const refresh = useCallback((quiet = false): Promise<boolean> => {
+    const inFlight = liveInFlightRef.current;
+    if (inFlight) return inFlight;
+    const run = (async () => {
+      const controller = new AbortController();
+      const kill = window.setTimeout(() => controller.abort(), LIVE_TIMEOUT_MS);
+      try {
+        // The allowance on the payload is this browser's, so the id has to ride along.
+        const headers: Record<string, string> = { ...deviceHeaders };
+        if (liveEtagRef.current) headers["If-None-Match"] = liveEtagRef.current;
+        const response = await client.api.fetch("/api/public/live", { headers, signal: controller.signal });
+        // Nothing changed since the copy on screen — keep it, and skip the parse and render.
+        if (response.status === 304) {
+          setError("");
+          return true;
+        }
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "The live feed is unavailable");
+        liveEtagRef.current = response.headers.get("etag");
+        setLive(result);
+        setError("");
+        return true;
+      } catch (cause) {
+        if (!quiet) {
+          setError(cause instanceof Error && cause.name !== "AbortError" ? cause.message : "The live feed is unavailable");
+        }
+        return false;
+      } finally {
+        window.clearTimeout(kill);
+        liveInFlightRef.current = null;
+      }
+    })();
+    liveInFlightRef.current = run;
+    return run;
   }, []);
 
   useEffect(() => {
-    void refresh();
-    const timer = window.setInterval(() => void refresh(true), 9000);
-    return () => window.clearInterval(timer);
+    let disposed = false;
+    let timer: number | null = null;
+    let backoff = LIVE_POLL_MS;
+    const schedule = (delay: number) => {
+      if (disposed) return;
+      // Jitter, so a whole audience recovering from the same outage does not retry in lockstep.
+      timer = window.setTimeout(() => void tick(), delay + Math.random() * 800);
+    };
+    async function tick() {
+      if (disposed) return;
+      // Park while hidden: no requests from background tabs. visibilitychange resumes the chain.
+      if (document.visibilityState === "hidden") return;
+      const ok = await refresh(true);
+      backoff = ok ? LIVE_POLL_MS : Math.min(backoff * 2, LIVE_POLL_MAX_MS);
+      schedule(backoff);
+    }
+    const onVisibility = () => {
+      if (document.visibilityState !== "visible" || disposed) return;
+      if (timer != null) window.clearTimeout(timer);
+      void tick();
+    };
+    // The first load fetches loudly (errors show), then the quiet self-scheduling chain takes over:
+    // the next request is only planned once the previous one has finished.
+    void refresh().finally(() => schedule(backoff));
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      disposed = true;
+      if (timer != null) window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [refresh]);
 
   // Characters owned by the signed-in account need no browser token at all; the legacy localStorage
@@ -135,31 +202,58 @@ function App() {
     ? null
     : controls.find((item) => item.participantId === activeId) ?? { participantId: activeId, controlToken: "" };
 
-  // Channels generate in parallel now, so one heartbeat drives every pending task. ActionBar and
+  // A browser drives only the channels it owns — the director line if it is the host, the
+  // contestants it holds a token for. Every viewer polling every pending clip meant one upstream
+  // call per viewer per clip every 2.5 seconds, and only the first of them could ever do anything;
+  // the rest just read the row back. Everyone else takes pending state off the live payload, and
+  // the server's own backstop advances a generation nobody is left to drive. ActionBar and
   // DirectorDialog read state from `live` instead of running polls of their own.
-  const pendingIds = (live?.pending_generations ?? []).map((item) => item.id).join(",");
+  const pendingIds = (live?.pending_generations ?? [])
+    .filter((item) => (
+      (item.channel === "director" && isHost)
+      || (item.channel_participant_id != null && ownedIds.includes(item.channel_participant_id))
+    ))
+    .map((item) => item.id)
+    .join(",");
 
   useEffect(() => {
     if (!pendingIds) return;
     const ids = pendingIds.split(",").map(Number);
     let active = true;
+    let timer: number | null = null;
+    const schedule = () => {
+      if (!active) return;
+      timer = window.setTimeout(() => void sync(), SYNC_POLL_MS);
+    };
+    // Self-scheduling: the next round is only planned after this one has fully returned, so a slow
+    // server stretches the cadence instead of stacking overlapping rounds.
     const sync = async () => {
+      if (!active) return;
+      // A hidden tab does not need to drive the pipeline; keep the timer alive cheaply instead.
+      if (document.visibilityState === "hidden") {
+        schedule();
+        return;
+      }
       let completed = false;
       for (const id of ids) {
         if (!active) return;
+        const controller = new AbortController();
+        const kill = window.setTimeout(() => controller.abort(), SYNC_TIMEOUT_MS);
         try {
-          const response = await client.api.fetch(`/api/public/generations/${id}/sync`, { method: "POST" });
+          const response = await client.api.fetch(`/api/public/generations/${id}/sync`, { method: "POST", signal: controller.signal });
           const result = await response.json();
           if (response.ok && result.generation?.stage === "completed") completed = true;
         } catch {
           // Keep the live page calm; ActionBar shows submission errors for the user who clicked.
+        } finally {
+          window.clearTimeout(kill);
         }
       }
       if (active && completed) void refresh(true);
+      schedule();
     };
     void sync();
-    const timer = window.setInterval(sync, 2500);
-    return () => { active = false; window.clearInterval(timer); };
+    return () => { active = false; if (timer != null) window.clearTimeout(timer); };
   }, [pendingIds, refresh]);
 
   const tailFrameKey = (live?.tail_frame_wanted ?? []).join(",");
