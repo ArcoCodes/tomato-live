@@ -2363,28 +2363,33 @@ interface ChatSeedTier {
   detail: string;
   floor: number;
   gapSeconds: number;
+  /** How often a past line is replayed. The written ones keep the room current; these keep it busy. */
+  echoSeconds: number;
 }
 const CHAT_SEED_TIERS: Record<ChatSeedTierKey, ChatSeedTier> = {
   busy: {
     key: "busy",
     label: "Busy",
-    detail: "Up to 5 lines waiting, a new one every 12s. The room feels packed.",
+    detail: "A replayed line every 3s and a written one every 12s. The room feels packed.",
     floor: 5,
     gapSeconds: 12,
+    echoSeconds: 3,
   },
   normal: {
     key: "normal",
     label: "Normal",
-    detail: "Up to 2 lines waiting, a new one every 45s.",
+    detail: "A replayed line every 5s and a written one every 45s.",
     floor: 2,
     gapSeconds: 45,
+    echoSeconds: 5,
   },
   quiet: {
     key: "quiet",
     label: "Quiet",
-    detail: "One line waiting at most, and only every 3 minutes.",
+    detail: "A replayed line every 20s and a written one every 3 minutes.",
     floor: 1,
     gapSeconds: 180,
+    echoSeconds: 20,
   },
   off: {
     key: "off",
@@ -2392,11 +2397,60 @@ const CHAT_SEED_TIERS: Record<ChatSeedTierKey, ChatSeedTier> = {
     detail: "Nobody is seeded. Only real viewers speak, and the show falls back to its own cues.",
     floor: 0,
     gapSeconds: 0,
+    echoSeconds: 0,
   },
 };
 
 function chatSeedTierOf(match: { chat_seed_tier: string }) {
   return CHAT_SEED_TIERS[match.chat_seed_tier as ChatSeedTierKey] ?? CHAT_SEED_TIERS.normal;
+}
+
+// A room that only speaks when a model has been asked to think can never be busy: one line costs a
+// call and seconds of latency. Replaying something already said costs neither, so the volume comes
+// from the archive and the written lines stay for keeping it current.
+//
+// Three things this must not do. It must not put words back in a real person's mouth — a replayed
+// line goes out under a new handle, so it reads as someone else saying a similar thing rather than
+// as that viewer speaking again. It must not commission footage: the "seed:" prefix keeps it out of
+// the film queue, out of the audience numbers and out of what the writers read as the room. And it
+// must not repeat what is already on screen, which is what the exclusion below is for.
+const ECHO_POOL_DEPTH = 400;
+
+async function maybeEchoChat(match: typeof matches.$inferSelect) {
+  const tier = chatSeedTierOf(match);
+  if (tier.echoSeconds <= 0) return null;
+  const matchId = match.id;
+  try {
+    // A fresh name each time, from the same generator the room's own guests get.
+    const handle = guestHandle(crypto.randomUUID());
+    // The interval is re-checked inside the statement: every watching browser ticks this, and a
+    // dozen heartbeats passing the same check outside it would post a dozen lines at once.
+    return await db.run(sql`
+      insert into chat_messages (match_id, user_id, device_id, display_name, body, mentions, priority)
+      select ${matchId}, '', ${`seed:echo:${handle}`}, ${handle}, source.body, source.mentions, 0
+      from (
+        select body, mentions from chat_messages
+        where match_id = ${matchId}
+          and length(body) between 4 and 140
+          and body not in (
+            select body from chat_messages where match_id = ${matchId} order by id desc limit 40
+          )
+        order by id desc
+        limit ${ECHO_POOL_DEPTH}
+      ) as source
+      where not exists (
+        select 1 from chat_messages
+        where match_id = ${matchId}
+          and device_id like 'seed:echo:%'
+          and created_at >= datetime('now', ${`-${tier.echoSeconds} seconds`})
+      )
+      order by random()
+      limit 1
+    `);
+  } catch (error) {
+    console.error("[echo] failed", error instanceof Error ? error.message : String(error));
+    return null;
+  }
 }
 
 async function maybeSeedChat(match: typeof matches.$inferSelect) {
@@ -3418,6 +3472,7 @@ const app = new Hono()
         let current = await ensureLiveMatch();
         try {
           await maybeSeedChat(current);
+          await maybeEchoChat(current);
           // Before anything asks for a slot, give back the ones nothing is using any more.
           await reapStalledGenerations(current.id);
           const turned = await advanceStory(current);
