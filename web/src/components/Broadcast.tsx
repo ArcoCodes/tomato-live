@@ -277,7 +277,12 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
       el.removeEventListener("scroll", update);
       observer.disconnect();
     };
-  }, [clips.length]);
+    // Everything that changes how far the strip can scroll. It used to watch the live window alone,
+    // so a page of history arrived, the track grew, and the arrow that would have revealed it never
+    // appeared — the observer watches the track's own box, which a longer row of cards does not
+    // change, so nothing recomputed until a scroll happened to fire. The loading state counts too:
+    // the button it swaps between spinner and label is itself part of the width.
+  }, [history.length, loadingOlder, moreOlder]);
 
   function pageArchive(direction: 1 | -1) {
     const el = archiveRef.current;
