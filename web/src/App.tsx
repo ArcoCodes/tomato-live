@@ -437,6 +437,21 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  // Tell the person who asked for a shot when it could not be filmed. Only theirs, only once: the
+  // heartbeat repeats the same list every few seconds, so a told line is remembered on the device
+  // rather than announced again — and a toast nobody can dismiss is worse than no toast.
+  const toldRef = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    const abandoned = live?.abandoned_lines ?? [];
+    if (!abandoned.length) return;
+    const fresh = abandoned.filter((line) => !toldRef.current.has(line.id));
+    if (!fresh.length) return;
+    for (const line of fresh) toldRef.current.add(line.id);
+    setToast(fresh.length > 1
+      ? `${fresh.length} of your lines could not be filmed — try wording them differently`
+      : `"${fresh[0].body}" could not be filmed — try wording it differently`);
+  }, [live?.abandoned_lines]);
+
   function openJoin() {
     if (!CHARACTER_CREATION_OPEN) {
       setToast(CHARACTER_CREATION_CLOSED_NOTICE);

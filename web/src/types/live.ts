@@ -89,6 +89,8 @@ export interface LiveData {
   chat: ChatMessage[];
   chat_waiting: number;
   chat_allowance: ChatAllowance | null;
+  /** This browser's own lines that the show finally gave up on. Per device, not shared. */
+  abandoned_lines: Array<{ id: number; body: string }>;
   pending_generation: PendingGeneration | null;
   pending_generations: PendingGeneration[];
   /** Contestant clips whose tail frame nobody has captured yet; the browser harvests these. */

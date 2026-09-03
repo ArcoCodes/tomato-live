@@ -1966,6 +1966,13 @@ function tierOf(match: { generation_tier: string }) {
 }
 
 // Every auto-queued clip counts against the low tiers' clock, whichever line asked for it.
+// The pace is a spend limit, so it counts what was actually spent. Nearly every failure here never
+// reaches billable compute — the shot was never submitted, the credential was refused, the prompt
+// was rejected at validation — and counting those meant one bad stretch bought the show ten minutes
+// of silence it had not paid for. The exception is a render the reaper gave up on: our timeout does
+// not cancel the job at fal, so that one may well be running and billing, and it still counts.
+const BUDGET_SPENDING_FAILURE = sql`(${generations.stage} != 'failed' or ${generations.error_message} like '%never came back%')`;
+
 // Only what the show filmed of its own accord. A clip somebody asked for is not part of the pace
 // being kept — counting it would let one viewer's line push the next self-driven beat back.
 async function autoQueuedWithin(matchId: number, seconds: number, houseOnly: boolean) {
@@ -1975,6 +1982,7 @@ async function autoQueuedWithin(matchId: number, seconds: number, houseOnly: boo
       houseOnly
         ? eq(generations.created_by, "house:auto")
         : sql`${generations.created_by} in ('house:auto', 'director:auto')`,
+      BUDGET_SPENDING_FAILURE,
       sql`${generations.created_at} >= datetime('now', ${`-${seconds} seconds`})`,
     ));
   return Number(row?.n ?? 0);
@@ -1985,6 +1993,7 @@ async function directorCutsWithin(matchId: number, seconds: number) {
     .where(and(
       eq(generations.match_id, matchId),
       eq(generations.created_by, "director:auto"),
+      BUDGET_SPENDING_FAILURE,
       sql`${generations.created_at} >= datetime('now', ${`-${seconds} seconds`})`,
     ));
   return Number(row?.n ?? 0);
@@ -2991,6 +3000,27 @@ function liveGenerationErrorStatus(error: unknown) {
 
 type LiveMatchRow = Awaited<ReturnType<typeof ensureLiveMatch>>;
 
+// Lines this browser wrote that the show finally gave up on. Not every failure: a render that fails
+// is requeued and its line points at nothing again, so a line still holding a failed clip is one
+// that spent all its attempts. Kept out of the shared payload because ownership is per device —
+// putting it in the chat list would tell every viewer whose line it was.
+async function abandonedLinesFor(matchId: number, deviceId: string) {
+  if (!deviceId) return [] as Array<{ id: number; body: string }>;
+  const rows = await db.select({ id: chatMessages.id, body: chatMessages.body })
+    .from(chatMessages)
+    .innerJoin(generations, eq(generations.id, chatMessages.generation_id))
+    .where(and(
+      eq(chatMessages.match_id, matchId),
+      eq(chatMessages.device_id, deviceId),
+      eq(generations.stage, "failed"),
+      // Recent only. Being told about a line from yesterday helps nobody.
+      sql`${chatMessages.created_at} >= datetime('now', '-30 minutes')`,
+    ))
+    .orderBy(desc(chatMessages.id))
+    .limit(5);
+  return rows.map((row) => ({ id: row.id, body: cleanText(row.body, 90) }));
+}
+
 // Everything in the live payload that is the same for every viewer. Roster presigns, the clip
 // window, the chat tail and the story choices cost the same whether one browser asks or a hundred
 // do, so they are built once per isolate per LIVE_SHARED_TTL_MS and handed out unchanged. Only
@@ -3419,6 +3449,7 @@ const app = new Hono()
     const payload = {
       ...shared,
       chat_allowance: await chatAllowanceState(match.id, deviceId),
+      abandoned_lines: await abandonedLinesFor(match.id, deviceId),
       tail_frame_wanted: tailFrameWanted,
     };
     // Versioned by content, not by clock: the browser hands the tag back and an unchanged feed
