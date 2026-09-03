@@ -6,6 +6,7 @@ import { JoinDialog } from "@/components/JoinDialog";
 import { ChatRoom } from "@/components/ChatRoom";
 import { LoginDialog } from "@/components/LoginDialog";
 import { Roster } from "@/components/Roster";
+import { ViewerCount } from "@/components/ViewerCount";
 import { useAuth } from "@/hooks/useAuth";
 import { useTailFrameHarvester } from "@/hooks/useTailFrameHarvester";
 import { deviceHeaders } from "@/lib/device";
@@ -325,7 +326,10 @@ function App() {
           <b>{live.match.subtitle}</b>
         </div>
         <div className="topbar-actions">
-          <span className="viewer-count"><i /> {live.match.viewers.toLocaleString()} WATCHING</span>
+          <ViewerCount
+            count={live.match.viewers}
+            handles={(live.chat ?? []).slice(-24).map((item) => item.display_name).reverse()}
+          />
           {/* Manual cuts are a host tool: the director channel advances on its own. */}
           {isHost ? <button className="text-action" onClick={openDirector}>Cut next</button> : null}
           <button className="join-action" onClick={openJoin}>{myParticipant ? "My contestant" : "Join"}<span>↗</span></button>
