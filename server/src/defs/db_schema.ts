@@ -205,6 +205,10 @@ export const chatMessages = sqliteTable("chat_messages", {
   body: text("body").notNull(),
   // Participant ids the message mentioned, as JSON. They are pulled into the shot together.
   mentions: text("mentions").notNull().default("[]"),
+  // Who gets filmed first when more lines are waiting than the show can shoot. The seeded room is 0,
+  // a real viewer is 1, the host is 2 — so the people actually watching always outrank our own
+  // filler, and the host's line is never left in the queue.
+  priority: integer("priority").notNull().default(0),
   // Claimed atomically when the show picks this message, so two concurrent pickers cannot film the
   // same message twice.
   consumed_at: text("consumed_at"),

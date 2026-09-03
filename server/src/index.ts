@@ -761,6 +761,17 @@ async function syncParticipantMaterial(participant: typeof participants.$inferSe
   return materialId;
 }
 
+// The next clip opens on this one's final frame, so the only part of a shot design worth handing
+// forward is how it ended. Carrying the first 600 characters instead gave the next shot the beats
+// that had already aired, and truncated the ending — the one part it actually needed. One memory
+// ended mid-word on "sam surfaces gasping, blo".
+function finalBeatOf(shot: string) {
+  const beats = shot.split(/(?=\d{1,2}\s*-\s*\d{1,2}\s*s\s*:)/i).map((part) => part.trim()).filter(Boolean);
+  const last = beats.length ? beats[beats.length - 1] : shot;
+  // The audio line describes sound, not the moment the next shot opens on.
+  return last.split(/\n\s*Audio\s*:/i)[0].trim();
+}
+
 function storyTextFromGeneration(generation: typeof generations.$inferSelect | null) {
   if (!generation?.prompt) return "";
   try {
@@ -1049,7 +1060,7 @@ async function promptsForViewerInput({
   // storyTextFromGeneration feeds this straight into the next clip's English prompt, so it must be
   // the expanded English text — never the viewer's raw line.
   const memorySource = expanded
-    ? cleanText(expanded, 600)
+    ? cleanText(finalBeatOf(expanded), 600)
     : `${participant.display_name} — ${cue}`;
   return {
     cue,
@@ -1970,19 +1981,31 @@ function chatPayload(row: typeof chatMessages.$inferSelect) {
   };
 }
 
+// The room drives the show, so the queue is ranked before anything else is considered: the host is
+// never left waiting, and a real viewer always outranks the chatter we seeded ourselves. Sampling
+// one line out of a mixed pool meant a viewer's idea competed with dozens of our own.
+const CHAT_PRIORITY_SEED = 0;
+const CHAT_PRIORITY_VIEWER = 1;
+const CHAT_PRIORITY_HOST = 2;
+
 async function claimChatCue(matchId: number, availableIds: number[]) {
   const waiting = await db.select().from(chatMessages)
     .where(and(eq(chatMessages.match_id, matchId), isNull(chatMessages.consumed_at)))
-    .orderBy(chatMessages.id)
-    .limit(30);
+    .orderBy(desc(chatMessages.priority), chatMessages.id)
+    .limit(40);
   if (!waiting.length) return null;
+
+  // Only the top rank present is in play; everything below it waits its turn.
+  const rank = waiting[0].priority;
+  const ranked = waiting.filter((item) => item.priority === rank);
 
   // Naming someone is how a viewer casts their idea, so a message whose target is free to film
   // outranks one that would have to be handed to whoever happens to be idle.
-  const aimed = waiting.filter((item) => parseParticipantIds(item.mentions).some((id) => availableIds.includes(id)));
-  const unaimed = waiting.filter((item) => parseParticipantIds(item.mentions).length === 0);
-  const pool = aimed.length ? aimed : unaimed.length ? unaimed : waiting;
-  const pick = pool[Math.floor(Math.random() * pool.length)];
+  const aimed = ranked.filter((item) => parseParticipantIds(item.mentions).some((id) => availableIds.includes(id)));
+  const unaimed = ranked.filter((item) => parseParticipantIds(item.mentions).length === 0);
+  const pool = aimed.length ? aimed : unaimed.length ? unaimed : ranked;
+  // The host's lines are filmed in the order they were written; everyone else's is a draw.
+  const pick = rank >= CHAT_PRIORITY_HOST ? pool[0] : pool[Math.floor(Math.random() * pool.length)];
 
   const [claimed] = await db.update(chatMessages)
     .set({ consumed_at: new Date().toISOString() })
@@ -2128,12 +2151,12 @@ async function maybeSeedChat(match: typeof matches.$inferSelect) {
 
 // Completed clips between turns when the room is silent. Every real viewer line pulls the next turn
 // two clips closer — that is what "the audience moves the plot" means mechanically.
-// At the live tier the show finishes roughly ten clips a minute, so 20 beats is a turn every couple
-// of minutes when the room is silent, and about forty seconds when it is busy. Below the floor the
-// story thrashes: nobody can follow a chapter that ends before its first clip has aired.
-const STORY_BEAT_TARGET = 20;
-const STORY_BEAT_FLOOR = 8;
-const STORY_PUSH_WEIGHT = 2;
+// The room is what moves this show. Three real viewer lines turn the story, whatever the clip count
+// says; the beat target is only what carries it along when nobody is talking. The floor is the one
+// hard limit — a chapter that ends before its first clip has aired is a chapter nobody can follow.
+const STORY_PUSH_TRIGGER = 3;
+const STORY_BEAT_TARGET = 12;
+const STORY_BEAT_FLOOR = 4;
 
 type StoryState = {
   chapter: number;
@@ -2191,6 +2214,37 @@ async function viewerPushSince(matchId: number, since: string | null) {
   return rows.map((row) => `${row.name}: ${row.body}`).reverse();
 }
 
+// The chapters the show has already done. Clip summaries describe single beats, so a diet of them
+// alone makes the showrunner think in beats too and hand back another inch of the same rock. The
+// chapter list is the only view of the story at the size this decision is made at.
+async function recentChapters(matchId: number, limit: number) {
+  const rows = await db.select({ title: matchEvents.title }).from(matchEvents)
+    .where(and(eq(matchEvents.match_id, matchId), eq(matchEvents.kind, "world")))
+    .orderBy(desc(matchEvents.id))
+    .limit(limit);
+  return rows.map((row) => row.title).reverse();
+}
+
+// The island, as places a camera can be. Handed to the showrunner when it has to move: asked in the
+// abstract it writes another inch of the rock it is already on, but given ground with names it goes
+// there. Nothing here implies a way off the island.
+const ISLAND_TERRAIN = [
+  "the surf line and the reef beyond it",
+  "a mangrove swamp on brackish water",
+  "a river gorge running fast after rain",
+  "dense jungle interior under closed canopy",
+  "a volcanic slope of loose ash and vents",
+  "the high ridge above the treeline",
+  "a dune field behind the beach",
+  "the wreck they came ashore in",
+  "tidal flats going out for a kilometre",
+  "a waterfall plunge pool in the rocks",
+  "burnt clearing left by an old fire",
+  "sea caves that flood at high tide",
+  "a rotting palm grove full of crabs",
+  "the headland where the wind never stops",
+];
+
 const STORY_TURN_RULES = [
   "You are the showrunner of a survival reality show that films around the clock. Your job is to move the story on: decide what the island does to these people next.",
   "Return ONLY a JSON object — no prose, no code fence — with exactly these keys:",
@@ -2202,12 +2256,17 @@ const STORY_TURN_RULES = [
   '"tension": integer 0-100, how close this situation is to disaster.',
   `Content: ${SAFE_PERIL_PROMPT}`,
   '"relocated": true only when "setting" is a genuinely different place from the current one.',
-  "Rules:",
-  "- The story must MOVE. Never hand back the current phase and setting unchanged; something has to have turned.",
-  "- Relocate when the timeline has earned it: they climbed, they went inside, the water drove them out, they found a way through. Roughly every second or third turn should be a real move.",
+  "THE ONE RULE YOU CANNOT BREAK: this is survival on a remote desert island, and it never becomes anything else.",
+  "- They never get off it. No rescue, no boat away, no aircraft, no radio contact answered, no mainland, no town, no camera crew, no other people arriving. Open water is a wall, not an exit.",
+  "- Nothing supernatural, no monsters, no technology the island would not have. Whatever threatens them is weather, water, terrain, cold, hunger, thirst, wildlife, or the wreckage of what they arrived with.",
+  "- Everything else about where this goes is yours to decide.",
+  "Beyond that, write freely:",
+  "- Range across the island. It has a shore, reefs, cliffs, caves, ridges, jungle, a river, mangrove, swamp, burnt ground, a crater, dunes, wreckage — you are not confined to the corner they are standing in.",
+  "- Do not continue the small moment the last clips were on. Hours can pass between turns. Come back to them somewhere else, doing something else, up against a different problem.",
+  "- Vary what the island is doing to them. Consecutive stretches should not all be about the same threat — a squeeze through rock, then a flood, then thirst, then a storm, then something in the water, then having to make fire.",
+  "- Change the pressure too. Not every stretch is a disaster: foraging, building, drying out, patching a raft, watching weather come in and knowing what it means are all good television.",
   "- Time only ever moves forward. Days pass, weather turns, light changes.",
-  "- When the viewers below asked for something, that is the strongest signal you have — bend the story toward it.",
-  "- Escalate, then release: after a brutal stretch, a quieter regrouping stretch is allowed and welcome.",
+  "- The viewers' lines below are the point of this show. If they asked for something, the next stretch IS that thing — not a nod to it, not a version of it you liked better. Only when the room is silent is the direction yours to choose.",
   "- Everything in English.",
 ].join("\n");
 
@@ -2220,7 +2279,8 @@ async function advanceStory(match: typeof matches.$inferSelect) {
     // amount of chat can pull the turn forward — so do not go near the chat table to find that out.
     if (match.story_beat < STORY_BEAT_FLOOR) return null;
     const pushes = await viewerPushSince(match.id, match.story_advanced_at).catch(() => [] as string[]);
-    const target = Math.max(STORY_BEAT_FLOOR, STORY_BEAT_TARGET - pushes.length * STORY_PUSH_WEIGHT);
+    // Either the room has spoken enough to steer, or enough has aired that the story owes a turn.
+    const target = pushes.length >= STORY_PUSH_TRIGGER ? STORY_BEAT_FLOOR : STORY_BEAT_TARGET;
     if (match.story_beat < target) return null;
     // Every watching browser ticks this, so without an atomic claim a dozen heartbeats all see the
     // same due beat and all pay for a turn. Zeroing the counter IS the claim; the losers write
@@ -2234,7 +2294,15 @@ async function advanceStory(match: typeof matches.$inferSelect) {
     const releaseClaim = () => db.update(matches).set({ story_beat: sql`story_beat + ${target}` })
       .where(eq(matches.id, match.id)).catch(() => undefined);
 
-    const timeline = await recentSummaries(match.id, 10).catch(() => [] as string[]);
+    // Few enough that the last few beats orient the turn without dictating its size.
+    const timeline = await recentSummaries(match.id, 4).catch(() => [] as string[]);
+    const chapters = await recentChapters(match.id, 8).catch(() => [] as string[]);
+    // Chapters only advance on a real move, so several stretches carrying the same number means the
+    // show has been picking at one situation. Asking nicely does not shift it — this does.
+    const held = chapters.filter((title) => title.startsWith(`Chapter ${state.chapter} `)).length;
+    const mustMove = held >= 2;
+    const unusedGround = ISLAND_TERRAIN
+      .filter((ground) => !chapters.concat(state.setting).some((seen) => seen.toLowerCase().includes(ground.split(" ")[1] ?? ground)));
     const cast = await db.select().from(participants)
       .where(and(eq(participants.match_id, match.id), eq(participants.is_system, true)));
 
@@ -2246,11 +2314,23 @@ async function advanceStory(match: typeof matches.$inferSelect) {
         `Time now: ${state.clock}`,
         `What they are trying to do: ${state.goal}`,
         `Tension now: ${state.tension}/100`,
-        timeline.length ? `\nWhat has happened, in order:\n${timeline.map((line, i) => `${i + 1}. ${line}`).join("\n")}` : "\nThe show has only just started.",
+        chapters.length
+          ? `\nStretches the show has already done, oldest first:\n${chapters.map((line) => `- ${line}`).join("\n")}\nDo not hand back another variation of these. Whatever you choose, it has to be something this list does not already cover.`
+          : "",
+        timeline.length ? `\nThe last few beats on screen:\n${timeline.map((line, i) => `${i + 1}. ${line}`).join("\n")}\nThese are single ten-second shots. Do not simply continue them — decide where the story goes next, at a far larger size than one shot.` : "\nThe show has only just started.",
         cast.length ? `\nThe contestants: ${cast.map((item) => contestantCondition(item)).join("; ")}` : "",
         pushes.length
           ? `\nThe viewers watching right now have been saying:\n${pushes.map((line) => `- ${line}`).join("\n")}\nTake them seriously — they are steering this show.`
           : "\nThe room is quiet, so this turn is yours to choose.",
+        mustMove
+          ? [
+            "\nTHIS TURN IS A HARD MOVE, and that is not optional.",
+            "They have been picking at the same situation for several stretches now. Whatever they were trying to do there is finished or abandoned — say so and leave.",
+            "Hours pass. Put them somewhere else on the island entirely, on ground the chapters above have not used.",
+            (unusedGround.length ? unusedGround : ISLAND_TERRAIN).slice(0, 8).map((ground) => `- ${ground}`).join("\n"),
+            'Pick one of those or somewhere just as different, write it into "setting", give them a new "goal" that belongs to that place, and set "relocated" to true.',
+          ].join("\n")
+          : "",
       ].filter(Boolean).join("\n"),
       chatBudget(1200),
       4000,
@@ -2534,16 +2614,19 @@ const app = new Hono()
     const body = cleanText(data.body, CHAT_MAX_CHARS);
     if (body.length < 2) return c.json({ error: "Write something first" }, 400);
     const match = await ensureLiveMatch();
+    // The host directs the show from the same box everyone else types into, so their line skips the
+    // queue, the cooldown and the allowance. Everything below is the viewer path.
+    const host = isHostAccount();
 
     const [recent] = await db.select({ n: sql<number>`count(*)` }).from(chatMessages).where(and(
       eq(chatMessages.match_id, match.id),
       eq(chatMessages.device_id, deviceId),
       sql`${chatMessages.created_at} >= datetime('now', ${`-${CHAT_COOLDOWN_SECONDS} seconds`})`,
     ));
-    if (Number(recent?.n ?? 0) > 0) return c.json({ error: "Slow down a moment" }, 429);
+    if (!host && Number(recent?.n ?? 0) > 0) return c.json({ error: "Slow down a moment" }, 429);
 
     const allowance = await chatAllowanceState(match.id, deviceId);
-    if (allowance && !allowance.unlimited && allowance.remaining <= 0) {
+    if (!host && allowance && !allowance.unlimited && allowance.remaining <= 0) {
       return c.json({
         error: allowance.next ? "You are out of messages" : "You have used every message",
         allowance,
@@ -2565,6 +2648,7 @@ const app = new Hono()
       display_name: auth.user?.email ? chatHandle(auth.user.email) : guestHandle(deviceId),
       body,
       mentions: JSON.stringify(mentions),
+      priority: host ? CHAT_PRIORITY_HOST : CHAT_PRIORITY_VIEWER,
     }).returning();
     return c.json({ message: chatPayload(row), mentions, allowance: await chatAllowanceState(match.id, deviceId) }, 201);
   })
@@ -2634,16 +2718,19 @@ const app = new Hono()
       })(),
       realViewers: await countRealWatching(match.id),
       board: await audienceBoard(match.id),
-      story: {
-        ...storyStateOf(match),
-        beat: match.story_beat,
-        // What the counter is racing to. Shown so a stalled story is visibly a stalled story.
-        target: Math.max(
-          STORY_BEAT_FLOOR,
-          STORY_BEAT_TARGET - (await viewerPushSince(match.id, match.story_advanced_at).catch(() => [])).length * STORY_PUSH_WEIGHT,
-        ),
-        advancedAt: match.story_advanced_at,
-      },
+      story: await (async () => {
+        const pushes = await viewerPushSince(match.id, match.story_advanced_at).catch(() => [] as string[]);
+        return {
+          ...storyStateOf(match),
+          beat: match.story_beat,
+          // What the counter is racing to, and why. A story held up by a quiet room reads very
+          // differently from one that is genuinely stuck.
+          target: pushes.length >= STORY_PUSH_TRIGGER ? STORY_BEAT_FLOOR : STORY_BEAT_TARGET,
+          pushes: pushes.length,
+          pushTrigger: STORY_PUSH_TRIGGER,
+          advancedAt: match.story_advanced_at,
+        };
+      })(),
       running: inFlight.length,
       houseUsed: Number(houseTally?.n ?? 0),
       houseLimit: HOUSE_CAST_MAX_CLIPS,

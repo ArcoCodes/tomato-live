@@ -51,7 +51,8 @@ interface TierState {
   story: {
     chapter: number; phase: string; setting: string; goal: string;
     clock: string; directive: string; tension: number;
-    beat: number; target: number; advancedAt: string | null;
+    beat: number; target: number; pushes: number; pushTrigger: number;
+    advancedAt: string | null;
   };
   running: number;
   houseUsed: number;
@@ -223,6 +224,11 @@ export function AdminChange() {
               <div className="admin-story-meters">
                 {/* The beat counter is what actually decides when the story turns, so show it as the
                     race it is. Viewer messages pull the target down; a stalled bar is a stalled show. */}
+                {/* The room is the primary trigger now; the clip count only carries a quiet show. */}
+                <div>
+                  <span>VIEWERS STEERING<b>{state.story.pushes} / {state.story.pushTrigger} lines</b></span>
+                  <i><u style={{ width: `${Math.min(100, Math.round(state.story.pushes / Math.max(1, state.story.pushTrigger) * 100))}%` }} /></i>
+                </div>
                 <div>
                   <span>NEXT TURN<b>{state.story.beat} / {state.story.target} clips</b></span>
                   <i><u style={{ width: `${Math.min(100, Math.round(state.story.beat / Math.max(1, state.story.target) * 100))}%` }} /></i>
