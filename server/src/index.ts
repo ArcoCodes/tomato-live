@@ -2278,6 +2278,26 @@ const ISLAND_TERRAIN = [
   "the headland where the wind never stops",
 ];
 
+// Which part of the day a clock line describes. Comparing the clock strings themselves does not
+// work: the model rewords it every turn — "the dead calm of midnight" then "dead calm of midnight"
+// — so an exact match reads two identical nights as a change and the show never sees a sunrise.
+function daypartOf(clock: string) {
+  const t = clock.toLowerCase();
+  if (/first light|dawn|sunrise|daybreak/.test(t)) return "dawn";
+  if (/morning/.test(t)) return "morning";
+  if (/noon|midday/.test(t)) return "midday";
+  if (/afternoon/.test(t)) return "afternoon";
+  if (/dusk|sunset|evening|twilight/.test(t)) return "dusk";
+  if (/night|midnight|dark|small hours/.test(t)) return "night";
+  return "unplaced";
+}
+
+// A chapter's detail line is "<clock>. <setting>. <goal>", so the clock is everything up to the
+// first sentence break. Reading the whole line would pick up a "night" from the scenery instead.
+function clockOfDetail(detail: string) {
+  return detail.split(". ")[0];
+}
+
 const STORY_TURN_RULES = [
   "You are the showrunner of a survival reality show that films around the clock. Your job is to move the story on: decide what the island does to these people next.",
   "Return ONLY a JSON object — no prose, no code fence — with exactly these keys:",
@@ -2334,7 +2354,8 @@ async function advanceStory(match: typeof matches.$inferSelect) {
     // A chapter's detail line opens with its clock, so this counts how long the show has been stuck
     // at one hour of one day. Twenty-four chapters ran without leaving the night of day one, and a
     // storm that never breaks makes every location look like the same wet rock.
-    const stalled = chapterRows.filter((row) => row.detail.startsWith(state.clock)).length;
+    const daypart = daypartOf(state.clock);
+    const stalled = chapterRows.filter((row) => daypartOf(clockOfDetail(row.detail)) === daypart).length;
     const mustAdvanceTime = stalled >= 3;
     // Chapters only advance on a real move, so several stretches carrying the same number means the
     // show has been picking at one situation. Asking nicely does not shift it — this does.
@@ -2365,7 +2386,7 @@ async function advanceStory(match: typeof matches.$inferSelect) {
           ? [
             "\nTIME HAS TO MOVE, and that is not optional either.",
             `It has been "${state.clock}" for several stretches now. Push the clock to the next real marker and let the weather turn with it.`,
-            /night|dark|midnight|small hours/i.test(state.clock)
+            daypart === "night"
               ? "It has been dark for a long time. This turn brings daylight — first light, morning or full sun — not another hour of night."
               : "Move to a different part of the day: afternoon light, dusk, or into the night.",
             "Weather that never breaks makes every place look identical. If a storm has been running, this is where it blows itself out, or where the next one is still hours off.",
