@@ -6,9 +6,8 @@ import { buckets, characterDrafts, chatMessages, generations, matchEvents, match
 
 const LIVE_SLUG = "island-zero";
 const RENOISE_DEFAULT_BASE_URL = "https://www.renoise.ai/api/public/v1";
-const MINIMAX_DEFAULT_BASE_URL = "https://api.minimax.io";
 const CHARACTER_MODEL = "image-01";
-// The character sheet doubles as the opening frame of that contestant's channel, and MiniMax takes
+// The character sheet doubles as the opening frame of that contestant's channel, and the model takes
 // the video ratio from the input image (`ratio` is ignored for image-to-video), so the sheet's
 // aspect ratio IS the broadcast's aspect ratio. Portrait, because most of the audience is on a phone.
 const CHARACTER_RATIO = "9:16";
@@ -279,110 +278,6 @@ async function clipUrl(value: string | null) {
   if (!value) return null;
   if (!storage.tryParseS3Uri(value)) return value.startsWith("https://") ? value : null;
   return await presignedUrl(value);
-}
-
-function requireMiniMax() {
-  const apiKey = secret.get("MINIMAX_API_KEY");
-  if (!apiKey) throw new Error("MINIMAX_API_KEY is not configured");
-  return {
-    apiKey,
-    baseUrl: (vars.get("MINIMAX_API_BASE_URL") || MINIMAX_DEFAULT_BASE_URL).replace(/\/$/, ""),
-  };
-}
-
-function miniMaxErrorMessage(payload: unknown, status: number) {
-  const root = asObject(payload);
-  const error = asObject(root.error);
-  const baseResp = asObject(root.base_resp);
-  return (
-    cleanText(error.message, 500)
-    || cleanText(error.type, 200)
-    || cleanText(baseResp.status_msg, 500)
-    || `MiniMax request failed (${status})`
-  );
-}
-
-async function miniMaxFetch(path: string, init: RequestInit = {}) {
-  const { apiKey, baseUrl } = requireMiniMax();
-  const headers = new Headers(init.headers);
-  headers.set("Accept", "application/json");
-  headers.set("Authorization", `Bearer ${apiKey}`);
-  if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-  const response = await fetch(`${baseUrl}${path}`, { ...init, headers });
-  const responseText = await response.text();
-  let payload: unknown = {};
-  try {
-    payload = responseText ? JSON.parse(responseText) : {};
-  } catch {
-    const contentType = response.headers.get("content-type") || "unknown";
-    const htmlHint = /<html|<!doctype/i.test(responseText) ? ", looks like an HTML page" : "";
-    throw new Error(`MiniMax ${path} returned an unparseable response (${response.status}, ${contentType}${htmlHint})`);
-  }
-  const baseResp = asObject(asObject(payload).base_resp);
-  const baseStatus = Number(baseResp.status_code);
-  if (!response.ok || (Number.isFinite(baseStatus) && baseStatus !== 0)) {
-    throw new Error(miniMaxErrorMessage(payload, response.status));
-  }
-  return payload;
-}
-
-async function miniMaxProbeRequest(path: string, init: RequestInit = {}) {
-  const { apiKey, baseUrl } = requireMiniMax();
-  const headers = new Headers(init.headers);
-  headers.set("Accept", "application/json");
-  headers.set("Authorization", `Bearer ${apiKey}`);
-  if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-  const response = await fetch(`${baseUrl}${path}`, { ...init, headers });
-  const text = await response.text();
-  let json = false;
-  let keys: string[] = [];
-  try {
-    const parsed = JSON.parse(text);
-    json = true;
-    keys = Object.keys(asObject(parsed));
-  } catch {
-    json = false;
-  }
-  return {
-    path,
-    status: response.status,
-    contentType: response.headers.get("content-type"),
-    json,
-    keys,
-    looksLikeHtml: /<html|<!doctype/i.test(text),
-    preview: json ? null : text.slice(0, 80),
-  };
-}
-
-// The one call not moved to fal. It leans on MiniMax's subject_reference to carry a real face into
-// the sheet, and picking a fal model with that capability is a decision, not a rename. Character
-// creation is closed, so the path is dormant — it refuses rather than quietly reaching for the old
-// key behind the migration's back.
-async function createMiniMaxCharacterImage(prompt: string, imageUrl: string) {
-  if (!CHARACTER_CREATION_OPEN) {
-    throw new Error("Character sheets are not wired to fal yet; creation is closed");
-  }
-  const payload = asObject(await miniMaxFetch("/v1/image_generation", {
-    method: "POST",
-    body: JSON.stringify({
-      model: CHARACTER_MODEL,
-      prompt: cleanText(prompt, 1500),
-      aspect_ratio: CHARACTER_RATIO,
-      subject_reference: [{ type: "character", image_file: imageUrl }],
-      response_format: "url",
-      prompt_optimizer: false,
-      n: 1,
-    }),
-  }));
-  const imageUrls = asObject(payload.data).image_urls;
-  const imageUrlResult = Array.isArray(imageUrls)
-    ? imageUrls.find((value): value is string => typeof value === "string" && value.startsWith("http"))
-    : null;
-  if (!imageUrlResult) throw new Error("MiniMax finished the character sheet but returned no image URL");
-  return {
-    id: cleanText(payload.id, 120) || crypto.randomUUID(),
-    url: imageUrlResult,
-  };
 }
 
 // ── fal ──────────────────────────────────────────────────────────────────────
@@ -1456,7 +1351,7 @@ function directorRequestFrom(data: JsonObject): GenerationRequest {
 }
 
 // Queueing is deliberately cheap: validate, write a `queued` row, return. All the slow work —
-// expanding the viewer's line into a shot design, writing the identity lock, submitting to MiniMax —
+// expanding the viewer's line into a shot design, writing the identity lock, submitting to fal —
 // happens in startQueuedGeneration, so the viewer sees a live stage instead of waiting inside the
 // POST with nothing on screen. Video generation itself only takes ~20s and already has feedback.
 async function queueLiveGeneration(request: GenerationRequest, createdBy: string) {
@@ -1538,7 +1433,7 @@ async function queueLiveGeneration(request: GenerationRequest, createdBy: string
   return generation;
 }
 
-// Turns a queued row into a submitted MiniMax task. Runs from the sync endpoint, so its cost lands
+// Turns a queued row into a submitted fal task. Runs from the sync endpoint, so its cost lands
 // on a poll the browser is making anyway rather than on the viewer's submit.
 async function startQueuedGeneration(generation: typeof generations.$inferSelect) {
   const [ownerMatch] = await db.select().from(matches).where(eq(matches.id, generation.match_id)).limit(1);
@@ -1643,7 +1538,7 @@ async function startQueuedGeneration(generation: typeof generations.$inferSelect
   ].filter(Boolean).join("\n");
 
   const videoTask = await createFalVideoTask(taskPrompt, opening.url, generation.duration_seconds);
-  // The prompt actually sent to MiniMax is persisted too, so a finished clip can be reproduced later.
+  // The prompt actually sent to fal is persisted too, so a finished clip can be reproduced later.
   const storedPrompt = JSON.stringify({
     promptVersion: LIVE_PROMPT_VERSION,
     keyframePrompt,
@@ -2208,7 +2103,11 @@ async function requeueFailedCue(generationId: number) {
 }
 
 async function releaseChatCue(id: number) {
-  await db.update(chatMessages).set({ consumed_at: null })
+  // The attempt is given back with the line. Losing a race for the last slot is not the cameras
+  // trying and failing — nothing was ever sent — and counting it burned the retry budget on a
+  // message the model had never seen. Attempts are failed renders, only.
+  await db.update(chatMessages)
+    .set({ consumed_at: null, attempts: sql`max(0, attempts - 1)` })
     .where(eq(chatMessages.id, id)).catch(() => undefined);
 }
 
@@ -2224,10 +2123,14 @@ async function viewerLineWaiting(matchId: number) {
 }
 
 async function claimChatCue(matchId: number, availableIds: number[]) {
+  // People only. The seeded room is atmosphere — it makes the chat feel inhabited, and that is all
+  // it is for. Letting it commission footage meant most of what the show filmed was its own chatter
+  // talking to itself, and a real viewer's line was one voice among ours.
   const waiting = await db.select().from(chatMessages)
     .where(and(
       eq(chatMessages.match_id, matchId),
       isNull(chatMessages.consumed_at),
+      gte(chatMessages.priority, CHAT_PRIORITY_VIEWER),
       lt(chatMessages.attempts, CHAT_CUE_MAX_ATTEMPTS),
     ))
     .orderBy(desc(chatMessages.priority), chatMessages.id)
@@ -2318,7 +2221,11 @@ async function maybeSeedChat(match: typeof matches.$inferSelect) {
   try {
     requireFal();
     const [waiting] = await db.select({ n: sql<number>`count(*)` }).from(chatMessages)
-      .where(and(eq(chatMessages.match_id, matchId), isNull(chatMessages.consumed_at)));
+      .where(and(
+        eq(chatMessages.match_id, matchId),
+        isNull(chatMessages.consumed_at),
+        gte(chatMessages.priority, CHAT_PRIORITY_VIEWER),
+      ));
     // Only speak up when the room has gone quiet; real viewers always take priority.
     if (Number(waiting?.n ?? 0) >= tier.floor) return null;
 
@@ -2905,7 +2812,7 @@ async function syncLiveGeneration(id: number) {
     }
     if (generation.stage === "queued") {
       // Claim the row first: two concurrent polls would otherwise both expand the prompt and submit
-      // two MiniMax tasks. "keyframe" is the claimed-and-writing state.
+      // two fal tasks. "keyframe" is the claimed-and-writing state.
       const claimed = await db.update(generations)
         .set({ stage: "keyframe" })
         .where(and(eq(generations.id, generation.id), eq(generations.stage, "queued")))
@@ -2940,7 +2847,7 @@ function liveGenerationErrorStatus(error: unknown) {
   if (name === "BadRequestError" || message.startsWith("Pick ")) return 400;
   if (name === "ConflictError") return 409;
   if (name === "NotFoundError") return 404;
-  if (message.includes("FAL_KEY") || message.includes("MINIMAX_API_KEY")) return 503;
+  if (message.includes("FAL_KEY")) return 503;
   if (message.includes("not currently offer") || message.includes("must be enabled")) return 503;
   return 502;
 }
@@ -3037,7 +2944,11 @@ const app = new Hono()
     const cast = (ids: number[]) => ids.map((id) => nameOf.get(id) ?? `#${id}`);
 
     const waiting = await db.select().from(chatMessages)
-      .where(and(eq(chatMessages.match_id, match.id), isNull(chatMessages.consumed_at)))
+      .where(and(
+        eq(chatMessages.match_id, match.id),
+        isNull(chatMessages.consumed_at),
+        gte(chatMessages.priority, CHAT_PRIORITY_VIEWER),
+      ))
       .orderBy(chatMessages.id)
       .limit(40);
     const claimed = await db.select().from(chatMessages)
@@ -3229,7 +3140,8 @@ const app = new Hono()
       // Oldest first: the room reads top to bottom.
       chat: chat.reverse().map(chatPayload),
       chat_allowance: await chatAllowanceState(match.id, deviceIdOf(c)),
-      chat_waiting: chat.filter((item) => !item.consumed_at).length,
+      // What is actually queued to film, which is now people's lines only.
+      chat_waiting: chat.filter((item) => !item.consumed_at && item.priority >= CHAT_PRIORITY_VIEWER).length,
       participants: rosterWithUrls,
       events,
       clips: clipList,
@@ -3323,16 +3235,12 @@ const app = new Hono()
   .get("/api/public/character/cost", async (c) => {
     return c.json({
       model: CHARACTER_MODEL,
-      displayName: "MiniMax image-01",
+      displayName: CHARACTER_MODEL,
       resolution: CHARACTER_RESOLUTION,
       estimatedCredit: null,
       sufficient: true,
-      available: CHARACTER_CREATION_OPEN && Boolean(secret.get("MINIMAX_API_KEY")),
-      notice: !CHARACTER_CREATION_OPEN
-        ? CHARACTER_CREATION_CLOSED_NOTICE
-        : secret.get("MINIMAX_API_KEY")
-          ? "One character sheet will be generated through the MiniMax API."
-          : "The MiniMax API key is not configured, so characters cannot be generated.",
+      available: false,
+      notice: CHARACTER_CREATION_CLOSED_NOTICE,
     });
   })
   .post("/api/public/character/generations", async (c) => {
@@ -3361,11 +3269,11 @@ const app = new Hono()
     if (displayName.length < 2) return c.json({ error: "The contestant name needs at least 2 characters" }, 400);
     if (concept.length < 4) return c.json({ error: "Describe the contestant you want to be, at least 4 characters" }, 400);
     if (!avatarPath || !avatarPath.startsWith("avatars/")) return c.json({ error: "Upload a valid photo of yourself first" }, 400);
-    if (data.creditApproved !== true) return c.json({ error: "Confirm that this will call the MiniMax API" }, 400);
+    if (data.creditApproved !== true) return c.json({ error: "Confirm that this will call the generation API" }, 400);
     try {
       requireFal();
     } catch {
-      return c.json({ error: "The MiniMax API key is not configured, so characters cannot be created" }, 503);
+      return c.json({ error: "The generation API key is not configured, so characters cannot be created" }, 503);
     }
 
     const meta = await storage.from(buckets.characterAvatars).head(avatarPath);
@@ -3405,7 +3313,12 @@ const app = new Hono()
     try {
       const sourceUrl = await avatarUrl(storage.createS3Uri(buckets.characterAvatars, avatarPath));
       if (!sourceUrl) throw new Error("Could not sign a temporary URL for the photo");
-      const imageTask = await createMiniMaxCharacterImage(prompt, sourceUrl);
+      // Sheets carried a real face into the show through MiniMax's subject reference. That provider
+      // is gone, and choosing a fal model with the same capability is a decision nobody has made —
+      // so this says so, rather than failing somewhere further down with a confusing message.
+      const imageTask: { url: string; id: string } = ((): never => {
+        throw new Error("Character sheets are not wired to fal yet");
+      })();
       const imageResponse = await fetch(imageTask.url);
       if (!imageResponse.ok) throw new Error("Could not download the generated character sheet");
       const imageBytes = await imageResponse.arrayBuffer();
@@ -3680,30 +3593,6 @@ const app = new Hono()
   .get("/api/director/status", async (c) => {
     await requireDirector();
     return c.json({ ready: Boolean(secret.get("FAL_KEY")), model: LIVE_VIDEO_MODEL, provider: "fal" });
-  })
-  .get("/api/director/minimax/probe", async (c) => {
-    await requireDirector();
-    try {
-      const results = await Promise.all([
-        miniMaxProbeRequest("/v1/models"),
-      ]);
-      return c.json({ ok: true, provider: "minimax", results });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "MiniMax probe failed";
-      return c.json({ ok: false, provider: "minimax", error: message }, 500);
-    }
-  })
-  .get("/api/director/renoise/probe", async (c) => {
-    await requireDirector();
-    try {
-      const results = await Promise.all([
-        miniMaxProbeRequest("/v1/models"),
-      ]);
-      return c.json({ ok: true, provider: "minimax", legacyAlias: true, results });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "MiniMax probe failed";
-      return c.json({ ok: false, provider: "minimax", legacyAlias: true, error: message }, 500);
-    }
   })
   .post("/api/director/generations", async (c) => {
     if (!isHostAccount()) return c.json({ error: "This account has no host permission" }, 403);
