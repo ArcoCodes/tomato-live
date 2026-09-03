@@ -2062,6 +2062,26 @@ const CHAT_PRIORITY_SEED = 0;
 const CHAT_PRIORITY_VIEWER = 1;
 const CHAT_PRIORITY_HOST = 2;
 
+// Is anyone real still waiting to be filmed? Only asked when the pacing gap is about to turn the
+// cast away, so the common path pays nothing for it.
+// Claiming happens before the slot is secured, so a line can be taken out of the queue and then
+// lose the race for the last render slot. Left there it would be marked filmed and never filmed —
+// a viewer's message silently swallowed. Put it back instead.
+async function releaseChatCue(id: number) {
+  await db.update(chatMessages).set({ consumed_at: null })
+    .where(eq(chatMessages.id, id)).catch(() => undefined);
+}
+
+async function viewerLineWaiting(matchId: number) {
+  const [row] = await db.select({ n: sql<number>`count(*)` }).from(chatMessages)
+    .where(and(
+      eq(chatMessages.match_id, matchId),
+      isNull(chatMessages.consumed_at),
+      gte(chatMessages.priority, CHAT_PRIORITY_VIEWER),
+    ));
+  return Number(row?.n ?? 0) > 0;
+}
+
 async function claimChatCue(matchId: number, availableIds: number[]) {
   const waiting = await db.select().from(chatMessages)
     .where(and(eq(chatMessages.match_id, matchId), isNull(chatMessages.consumed_at)))
@@ -2077,7 +2097,14 @@ async function claimChatCue(matchId: number, availableIds: number[]) {
   // outranks one that would have to be handed to whoever happens to be idle.
   const aimed = ranked.filter((item) => parseParticipantIds(item.mentions).some((id) => availableIds.includes(id)));
   const unaimed = ranked.filter((item) => parseParticipantIds(item.mentions).length === 0);
-  const pool = aimed.length ? aimed : unaimed.length ? unaimed : ranked;
+  // A line that names someone is a casting decision. Handing it to whoever happens to be free
+  // films the opposite of what was asked, so a real viewer's line waits for the person they named
+  // instead — they are only ever a clip away. Our own seeded chatter can be recast freely.
+  const pool = aimed.length ? aimed
+    : unaimed.length ? unaimed
+    : rank >= CHAT_PRIORITY_VIEWER ? []
+    : ranked;
+  if (!pool.length) return null;
   // The host's lines are filmed in the order they were written; everyone else's is a draw.
   const pick = rank >= CHAT_PRIORITY_HOST ? pool[0] : pool[Math.floor(Math.random() * pool.length)];
 
@@ -2571,7 +2598,11 @@ async function maybeAdvanceHouseCast(match: typeof matches.$inferSelect) {
     const [tally] = await db.select({ total: sql<number>`count(*)` }).from(generations)
       .where(and(eq(generations.match_id, matchId), sql`${generations.created_by} like 'house:%'`));
     if (Number(tally?.total ?? 0) >= HOUSE_CAST_MAX_CLIPS) return null;
-    if (await autoQueuedWithin(matchId, tier.gapSeconds, !tier.gapCoversDirector) > 0) return null;
+    // The gap paces the show filming its own ideas. Somebody in the room asking for something is
+    // not that, and making them wait out a tier's interval is the opposite of a live broadcast.
+    if (await autoQueuedWithin(matchId, tier.gapSeconds, !tier.gapCoversDirector) > 0) {
+      if (!await viewerLineWaiting(matchId)) return null;
+    }
 
     const cast = await db.select().from(participants)
       .where(and(eq(participants.match_id, matchId), eq(participants.is_system, true)));
@@ -2601,16 +2632,23 @@ async function maybeAdvanceHouseCast(match: typeof matches.$inferSelect) {
     // The first person named who is free to film owns the shot; the rest join it.
     const next = idle.find((item) => mentioned.includes(item.id)) ?? idle[0];
     const guestIds = mentioned.filter((id) => id !== next.id);
-    const generation = await queueLiveGeneration({
-      channel: "participant",
-      channelParticipantId: next.id,
-      participantIds: [next.id, ...guestIds].slice(0, 3),
-      keyframePrompt: "",
-      videoPrompt: "",
-      visualMemory: "",
-      duration: LIVE_VIDEO_DURATION_SECONDS,
-      viewerPrompt: cue ? cue.body : match.story_directive,
-    }, cue ? "house:chat" : "house:auto");
+    let generation: Awaited<ReturnType<typeof queueLiveGeneration>> | null = null;
+    try {
+      generation = await queueLiveGeneration({
+        channel: "participant",
+        channelParticipantId: next.id,
+        participantIds: [next.id, ...guestIds].slice(0, 3),
+        keyframePrompt: "",
+        videoPrompt: "",
+        visualMemory: "",
+        duration: LIVE_VIDEO_DURATION_SECONDS,
+        viewerPrompt: cue ? cue.body : match.story_directive,
+      }, cue ? "house:chat" : "house:auto");
+    } catch (error) {
+      if (cue) await releaseChatCue(cue.id);
+      throw error;
+    }
+    if (!generation && cue) await releaseChatCue(cue.id);
     if (generation) {
       await db.update(participants).set({
         stamina: sql`max(0, stamina - 3)`,
@@ -2798,7 +2836,16 @@ const app = new Hono()
       mentions: JSON.stringify(mentions),
       priority: host ? CHAT_PRIORITY_HOST : CHAT_PRIORITY_VIEWER,
     }).returning();
-    return c.json({ message: chatPayload(row), mentions, allowance: await chatAllowanceState(match.id, deviceId) }, 201);
+    // Film it now rather than on whichever browser happens to heartbeat next. The queue write is
+    // cheap — the prompt work happens later, on the sync poll — so this costs the poster almost
+    // nothing and is the difference between a live room and a suggestion box.
+    const filming = await maybeAdvanceHouseCast(match).catch(() => null);
+    return c.json({
+      message: chatPayload(row),
+      mentions,
+      filming: filming?.id ?? null,
+      allowance: await chatAllowanceState(match.id, deviceId),
+    }, 201);
   })
   .post("/api/public/chat/unlock", async (c) => {
     const deviceId = deviceIdOf(c);
