@@ -315,34 +315,33 @@ fieldset { border: 0; padding: 0; margin: 0 0 20px; }
   .topbar { height: 56px; padding: 0 12px; }.brand-lockup strong { font-size: 18px; }.brand-lockup div span, .text-action { display: none; }.brand-mark { width: 30px; height: 30px; }.join-action { height: 34px; padding: 0 13px; font-size: 12px; }
   .match-title { display: none; }
   .viewer-count { font-size: 8px; }
-  .live-grid { flex: none; height: auto; min-height: 0; max-width: none; display: flex; flex-direction: column; padding: 8px; gap: 8px; overflow: visible; }
-  .live-grid > * { flex: none; }
-  .broadcast { order: 1; gap: 6px; flex: none; container-type: normal; }
-  .broadcast-media { width: 100%; }
-  /* The stage keeps 9:16 but is capped so the chat under it is on screen without scrolling. */
-  .broadcast-media { flex: none; container-type: normal; background: var(--stage); border-radius: var(--r-lg); box-shadow: var(--sh-2); }
-  .broadcast-frame { width: auto; height: min(54vh, calc(100vw - 16px) * 832 / 480); max-width: 100%; margin: 0 auto; border-radius: 0; box-shadow: none; }
-  .channel-bar { padding: 6px; gap: 6px; }
+  /* A phone gets the broadcast, not a page about the broadcast: the clip fills the screen and
+     everything else floats on top of it. */
+  .live-grid { position: relative; flex: none; height: calc(100dvh - 56px); min-height: 0; max-width: none; display: block; padding: 0; gap: 0; overflow: hidden; background: var(--stage); }
+  .broadcast { position: absolute; inset: 0; gap: 0; container-type: normal; }
+  .broadcast-media { position: absolute; inset: 0; width: 100%; flex: none; container-type: normal; background: var(--stage); border-radius: 0; box-shadow: none; }
+  .broadcast-media::before { inset: 0; filter: blur(30px) brightness(.5) saturate(.9); }
+  .broadcast-frame { width: 100%; height: 100%; max-width: none; margin: 0; border-radius: 0; box-shadow: none; aspect-ratio: auto; }
+  /* Cover, so a portrait clip reaches every edge of a portrait phone. */
+  .broadcast video, .stream-video { object-fit: cover; }
+  /* Floating controls, in front of the picture. */
+  .channel-bar { position: absolute; left: 0; right: 0; top: 0; z-index: 6; padding: 8px; gap: 6px; background: linear-gradient(rgb(12 9 7 / .72), transparent); border-radius: 0; box-shadow: none; }
+  .channel-bar button { background: rgb(255 255 255 / .13); border-color: transparent; color: #fdfaf8; backdrop-filter: blur(10px); }
+  .channel-bar button.active { background: var(--brand); border-color: transparent; color: #fff; }
+  .channel-copy small { color: rgb(253 250 248 / .72); }
+  .channel-bar button.active .channel-copy small { color: rgb(255 255 255 / .82); }
+  .channel-thumb { box-shadow: none; }
   .channel-bar button { flex: none; min-width: 132px; max-width: 156px; padding: 6px 10px 6px 6px; gap: 8px; }
   .channel-thumb { width: 34px; height: 34px; }
   .channel-thumb.is-mark { width: 44px; }
   .channel-copy { gap: 2px; }
   .channel-copy strong { font-size: 13px; }
   .channel-copy small { font-size: 8.5px; }
-  .clip-history { padding: 2px 8px 0; }
-  .clip-history-track { padding: 6px 0 2px; }
-  .clip-history-track button { width: 84px; padding: 8px 0 0; }
-  .clip-thumb { height: 44px; }
-  .clip-meta { padding: 2px 3px 0; }
-  .clip-meta strong { font-size: 11px; }
-  .roster-panel { order: 3; }
-  .panel-heading { min-height: 48px; padding: 10px 14px; }
-  .panel-heading h2 { font-size: 20px; }
-  .roster-list { grid-auto-flow: column; grid-auto-columns: 116px; grid-template-columns: none; overflow-x: auto; padding: 10px; gap: 8px; }
-  .hero-meta { padding: 8px 9px 9px; }
-  .hero-meta strong { font-size: 14px; }
-  .hero-meta span { font-size: 9.5px; }
-  .chat-panel { display: flex; order: 2; max-height: none; min-height: 300px; }
+  /* The archive and the roster are a lean-back page, not a live room. */
+  .clip-history, .roster-panel { display: none; }
+  /* Chat rides on the picture, bottom-anchored, the way a live room reads. */
+  .chat-panel { position: absolute; left: 0; right: 0; bottom: 0; z-index: 7; display: flex; max-height: 52%; min-height: 0; background: none; border-radius: 0; box-shadow: none; overflow: visible; pointer-events: none; }
+  .chat-panel .panel-heading { display: none; }
   .chat-list { padding: 10px 12px; gap: 9px; }
   .chat-compose { padding: 8px 10px 10px; }
   /* 16px keeps iOS from zooming the page when the field takes focus. */
@@ -447,27 +446,43 @@ fieldset { border: 0; padding: 0; margin: 0 0 20px; }
 @keyframes card-in { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: none; } }
 
 /* ---- phone overrides (must come after the component rules above) ---- */
+
+/* ---- phone: the live room ---- */
 @media (max-width: 760px) {
+  /* Chat sits on the picture, so it reads light-on-dark and fades out at the top rather than
+     ending on a hard edge. */
+  .chat-list { flex: 1 1 auto; min-height: 0; padding: 0 14px 6px; gap: 11px; justify-content: flex-end; pointer-events: auto; overflow-y: auto; background: linear-gradient(transparent, rgb(12 9 7 / .5) 26%, rgb(12 9 7 / .74)); -webkit-mask-image: linear-gradient(transparent, #000 14%); mask-image: linear-gradient(transparent, #000 14%); }
+  .chat-who { color: rgb(253 250 248 / .6); font-size: 10px; }
+  .chat-line p { color: #fdfaf8; font-size: 14px; line-height: 1.5; text-shadow: 0 1px 4px rgb(0 0 0 / .65); }
+  .chat-line.is-filmed p { color: rgb(253 250 248 / .68); }
+  .chat-jump { background: rgb(255 255 255 / .16); color: #fff; backdrop-filter: blur(6px); }
+  .chat-jump:hover { background: var(--brand); }
+  .chat-line em { background: rgb(255 255 255 / .16); color: #fff; }
+  .chat-empty { color: rgb(253 250 248 / .72); text-shadow: 0 1px 4px rgb(0 0 0 / .6); font-size: 12px; padding: 0 8px; }
+
+  .chat-compose { pointer-events: auto; padding: 6px 12px calc(10px + env(safe-area-inset-bottom)); border-top: 0; background: linear-gradient(transparent, rgb(12 9 7 / .82) 40%); }
   /* Under 16px iOS zooms the page when the field takes focus, and never zooms back. */
-  .chat-field input { font-size: 16px; height: 40px; }
-  .chat-field button { height: 40px; padding: 0 16px; }
-  .chat-list { padding: 10px 12px; gap: 9px; }
-  .chat-line p { font-size: 13.5px; }
-  .chat-panel { min-height: 260px; }
+  .chat-field input { height: 42px; font-size: 16px; background: rgb(255 255 255 / .14); border-color: rgb(255 255 255 / .2); color: #fff; backdrop-filter: blur(14px); }
+  .chat-field input::placeholder { color: rgb(253 250 248 / .55); }
+  .chat-field input:focus { border-color: rgb(255 255 255 / .5); box-shadow: none; }
+  .chat-field button { height: 42px; padding: 0 18px; }
+
+  /* Commentary moves above the picture: the bottom of the screen belongs to chat now. */
+  .broadcast-subtitle { top: 64px; bottom: auto; z-index: 5; padding: 0 14px; background: none; }
+  .broadcast-subtitle span { margin-bottom: 3px; }
+  .broadcast-subtitle p { font-size: 12.5px; line-height: 1.5; max-width: none; text-shadow: 0 1px 6px rgb(0 0 0 / .9); }
+  .gen-progress { top: 56px; }
+  .gen-progress-copy { padding: 8px 14px 0; }
+  .gen-progress-copy strong { font-size: 13px; }
+  .gen-progress-copy span { font-size: 9.5px; }
+  /* Clear of both the channel strip above and the chat below. */
+  .sound-toggle { top: auto; bottom: 54%; right: 12px; }
+  .broadcast-frame:has(.gen-progress) .sound-toggle { top: auto; }
+
+  footer { display: none; }
+  .app-shell { height: 100dvh; overflow: hidden; }
+  .clip-card { width: 26px; height: 26px; margin-left: -12px; }
   .chat-unlock-card { max-width: min(320px, calc(100vw - 36px)); }
-  /* Touch scrolls the strip directly; the arrows are a pointer affordance. */
-  .clip-nav { display: none; }
-  .clip-history-track { scroll-snap-type: x proximity; }
-  .clip-history-track button { scroll-snap-align: start; }
   .app-toast { left: 12px; right: 12px; transform: none; text-align: center; }
   @keyframes toast-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
-}
-
-@media (max-width: 760px) {
-  /* Cast cards scale with the still they sit on, not with the desktop one. */
-  .clip-card { width: 26px; height: 26px; margin-left: -12px; }
-  .clip-cast { right: 6px; }
-  /* Room for a real conversation, not two lines of it. */
-  .chat-panel { min-height: 340px; }
-  .chat-list { min-height: 200px; }
 }
