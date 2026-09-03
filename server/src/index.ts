@@ -40,6 +40,13 @@ const PACING_PROMPT = [
   `Break the ${LIVE_VIDEO_DURATION_SECONDS} seconds into three escalating beats — a new physical action or a new complication roughly every ${Math.round(LIVE_VIDEO_DURATION_SECONDS / 3)} seconds. Never hold one pose or one framing for the whole clip.`,
   "Camera: moving throughout — push in, track alongside, drop low, rise, swing to a new angle, rack focus. Change the framing at least twice.",
 ].join("\n");
+// Peril is the show; injury detail is what gets a clip refused. The shot designer escalates hard
+// by design — every beat has to be a worse complication than the last — and left alone it walks
+// straight into blood and open wounds, which the video model rejects outright. One contestant was
+// losing nearly half its clips this way, and a refused clip leaves no tail frame, so the channel
+// then reopens on the same rejected frame and refuses again.
+const SAFE_PERIL_PROMPT = "Keep it broadcastable: strain, exhaustion, cold, fear and near-misses carry the danger. No blood, no wounds, no injury detail, no gore, no bodies.";
+
 const NO_SCREEN_TEXT_PROMPT = [
   "ABSOLUTE VISUAL RULE: raw camera footage only.",
   "No visible text anywhere in the image or video.",
@@ -801,6 +808,25 @@ async function failuresSince(matchId: number, participantId: number, clipId: num
   return Number(row?.n ?? 0);
 }
 
+// A render that never comes back holds its contestant's channel shut for good, because a channel is
+// single-file by design: nothing else can film for that person until this row leaves the active
+// stages. One contestant went sixteen minutes with a single clip wedged in `video`. Of 1326 clips
+// filmed in three hours exactly one took longer than a minute, so five is far past generous.
+const STALE_GENERATION_SECONDS = 300;
+
+async function reapStalledGenerations(matchId: number) {
+  const reaped = await db.update(generations)
+    .set({ stage: "failed", error_message: "The render never came back; the channel was freed so the show could go on" })
+    .where(and(
+      eq(generations.match_id, matchId),
+      inArray(generations.stage, ["queued", "keyframe", "video"]),
+      sql`created_at < datetime('now', ${`-${STALE_GENERATION_SECONDS} seconds`})`,
+    ))
+    .returning({ id: generations.id });
+  if (reaped.length) console.log(`[reaper] freed ${reaped.length} wedged clip(s)`);
+  return reaped.length;
+}
+
 async function activeGenerations(matchId: number) {
   return db.select().from(generations)
     .where(and(eq(generations.match_id, matchId), inArray(generations.stage, ["queued", "keyframe", "video"])))
@@ -958,6 +984,7 @@ async function expandViewerPrompt(
         "- Every beat is a NEW physical action or a NEW complication — something gives way, slips, tears, floods, catches. Never the same pose held throughout.",
         "- Keep the camera moving the whole time and change the framing at least twice.",
         "- Write concrete physical detail: what the hands grip, what slips, what splashes, what the wind and rain do.",
+        `- ${SAFE_PERIL_PROMPT}`,
         `- The people in this shot are: ${cast}. Call them by these exact names throughout — never "the contestant" or "a survivor".`,
         guests.length
           ? `- ${guests.join(" and ")} appear alongside ${lead}; give them their own physical actions, do not leave them standing idle. No one outside this list appears.`
@@ -1078,6 +1105,7 @@ async function expandDirectorCut(sourceStory: string, timeline: string[], lead: 
         `- Three escalating beats of about ${beatSeconds} seconds each, written as "0-${beatSeconds}s: ...".`,
         "- Keep the location, weather, wardrobe and colour grade continuous with the opening frame.",
         "- This is the show's wide view, so use it: reveal how far the situation has moved on, what the place has become, and what is closing in next.",
+        `- ${SAFE_PERIL_PROMPT}`,
         "- End with one line starting 'Audio:' describing a calm English-speaking commentator narrating the situation over storm ambience.",
         "- No on-screen text, subtitles, captions or graphics. Write everything in English.",
         "Output only the prompt itself, no preamble.",
@@ -1467,6 +1495,7 @@ async function startQueuedGeneration(generation: typeof generations.$inferSelect
     cleanText(videoPrompt, 3500),
     generation.channel === "director" ? DIRECTOR_AUDIO_PROMPT : FIELD_AUDIO_PROMPT,
     NO_SCREEN_TEXT_PROMPT,
+    SAFE_PERIL_PROMPT,
     moving
       ? "The location changes across this take, on camera and without a cut. Avoid any hard cut, reset, new people, face morphing, or sudden costume changes."
       : "Avoid any hard cut to a different scene, any reset, new location, new people, face morphing, or sudden costume changes.",
@@ -2171,6 +2200,7 @@ const STORY_TURN_RULES = [
   '"goal": the one thing the contestants are now trying to do, in one clause.',
   '"directive": one instruction under 25 words that ANY of them could act on right now. Never name a contestant and never assume where one particular person is standing — every one of them is handed this same line, so it has to be what the situation demands of whoever is on camera. A physical action with a complication in it, never a feeling.',
   '"tension": integer 0-100, how close this situation is to disaster.',
+  `Content: ${SAFE_PERIL_PROMPT}`,
   '"relocated": true only when "setting" is a genuinely different place from the current one.',
   "Rules:",
   "- The story must MOVE. Never hand back the current phase and setting unchanged; something has to have turned.",
@@ -2656,6 +2686,8 @@ const app = new Hono()
     await markWatching(match.id, deviceIdOf(c));
     // There is no scheduler here, so the house cast advances on the back of the viewer heartbeat.
     await maybeSeedChat(match);
+    // Before anything asks for a slot, give back the ones nothing is using any more.
+    await reapStalledGenerations(match.id);
     const turned = await advanceStory(match);
     const current = turned ? await ensureLiveMatch() : match;
     // The director line is normally chained off a tail frame landing. If every slot happened to be
