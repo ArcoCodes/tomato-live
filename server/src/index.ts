@@ -1683,13 +1683,31 @@ async function markWatching(matchId: number, deviceId: string) {
     .catch(() => undefined);
 }
 
+// A synthetic crowd sitting under the real one, so the counter reads like a broadcast rather than
+// like an empty room. Derived from the clock, not from random: every viewer sees the same figure at
+// the same moment, and it drifts smoothly instead of jumping between heartbeats. Set to 0 to show
+// only the people actually present.
+const SYNTHETIC_AUDIENCE_CENTRE = 1600;
+const SYNTHETIC_AUDIENCE_SWING = 780;
+
+function syntheticAudience(now = Date.now()) {
+  if (SYNTHETIC_AUDIENCE_CENTRE <= 0) return 0;
+  const t = now / 1000;
+  // Two periods that do not divide into each other, so the curve never looks like a loop: a tide
+  // over ~90 minutes and a ripple over ~13.
+  const tide = Math.sin((t / 5400) * Math.PI * 2);
+  const ripple = Math.sin((t / 780) * Math.PI * 2 + 1.7);
+  const drift = tide * SYNTHETIC_AUDIENCE_SWING + ripple * (SYNTHETIC_AUDIENCE_SWING * 0.17);
+  return Math.max(120, Math.round(SYNTHETIC_AUDIENCE_CENTRE + drift));
+}
+
 async function countWatching(matchId: number) {
   const [row] = await db.select({ n: sql<number>`count(*)` }).from(viewerPresence)
     .where(and(
       eq(viewerPresence.match_id, matchId),
       sql`${viewerPresence.last_seen} >= datetime('now', ${`-${VIEWER_PRESENCE_WINDOW_SECONDS} seconds`})`,
     ));
-  return Number(row?.n ?? 0);
+  return Number(row?.n ?? 0) + syntheticAudience();
 }
 
 const CHAT_MAX_CHARS = 140;
