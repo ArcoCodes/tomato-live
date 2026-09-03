@@ -81,12 +81,22 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
   loadingOlder?: boolean;
   onLoadOlder?: () => void;
 }) {
+  // Loaded history belongs here, not only in the strip below. Kept out of this list, the archive
+  // rendered cards the player could not find: a click set the queued id, the lookup came back empty
+  // and nothing happened. Ids only climb, so older clips land at the front — the newest is still the
+  // newest, and the progression through the live window is untouched.
   const playable = useMemo(
-    () => clips
-      .filter((clip) => clip.result_url)
-      .slice()
-      .sort((a, b) => a.id - b.id),
-    [clips],
+    () => {
+      const seen = new Set<number>();
+      const all: BroadcastClip[] = [];
+      for (const item of [...clips, ...olderClips]) {
+        if (!item.result_url || seen.has(item.id)) continue;
+        seen.add(item.id);
+        all.push(item);
+      }
+      return all.sort((a, b) => a.id - b.id);
+    },
+    [clips, olderClips],
   );
   const [currentClipId, setCurrentClipId] = useState<number | null>(null);
   const [queuedClipId, setQueuedClipId] = useState<number | null>(null);
@@ -120,12 +130,7 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
   const standbySlot = activeSlot === 0 ? 1 : 0;
   const standbyReadyKey = standbyClip ? `${standbySlot}:${standbyClip.id}` : "";
   const latestClipId = playable[playable.length - 1]?.id ?? null;
-  const onScreenIds = new Set(playable.map((item) => item.id));
-  const history = [
-    ...[...playable].reverse(),
-    // A page can overlap the live window if it moved while the request was in flight.
-    ...olderClips.filter((item) => !onScreenIds.has(item.id)),
-  ];
+  const history = [...playable].reverse();
 
   // Owner first so their sheet sits on top of the fan; guests peek out behind it.
   function castOf(clip: BroadcastClip) {

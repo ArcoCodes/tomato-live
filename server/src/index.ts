@@ -662,6 +662,7 @@ async function expandCharacterConcept(displayName: string, concept: string): Pro
       ].join("\n"),
       `Contestant name: ${displayName}\nViewer description: ${concept}`,
       chatBudget(900),
+      SHOT_DESIGN_MAX_CHARS,
     );
     const parsed = extractJsonObject(raw);
     if (!parsed) return fallback;
@@ -818,17 +819,6 @@ async function syncParticipantMaterial(participant: typeof participants.$inferSe
   );
   await db.update(participants).set({ renoise_material_id: materialId }).where(eq(participants.id, participant.id));
   return materialId;
-}
-
-// The next clip opens on this one's final frame, so the only part of a shot design worth handing
-// forward is how it ended. Carrying the first 600 characters instead gave the next shot the beats
-// that had already aired, and truncated the ending — the one part it actually needed. One memory
-// ended mid-word on "sam surfaces gasping, blo".
-function finalBeatOf(shot: string) {
-  const beats = shot.split(/(?=\d{1,2}\s*-\s*\d{1,2}\s*s\s*:)/i).map((part) => part.trim()).filter(Boolean);
-  const last = beats.length ? beats[beats.length - 1] : shot;
-  // The audio line describes sound, not the moment the next shot opens on.
-  return last.split(/\n\s*Audio\s*:/i)[0].trim();
 }
 
 function storyTextFromGeneration(generation: typeof generations.$inferSelect | null) {
@@ -1024,6 +1014,11 @@ async function miniMaxChat(system: string, user: string, maxTokens: number, maxC
   return cleanText(message.content, maxChars);
 }
 
+// A three-beat shot design runs past 1200 characters, and the reader's default trims at 800 — so
+// every design arrived cut mid-sentence, missing its last beat and the audio line the rules ask for.
+// 114 of 117 clips in one three-hour stretch had no audio line at all.
+const SHOT_DESIGN_MAX_CHARS = 3000;
+
 const REASONING_HEADROOM = 1400;
 
 function chatBudget(forOutput: number) {
@@ -1034,135 +1029,55 @@ function chatBudget(forOutput: number) {
 // action line. If the model is unavailable we pass the original text straight through.
 // Viewers type one short line. That alone yields a flat clip, so the model expands it into a real
 // shot design with beats before it ever reaches the video model.
-async function expandViewerPrompt(
-  viewerPrompt: string,
-  condition: string,
-  previousStory: string,
-  lead: string,
-  guests: string[],
-  story: StoryState,
-  moving: boolean,
-) {
-  const beatSeconds = Math.round(LIVE_VIDEO_DURATION_SECONDS / 3);
-  const cast = guests.length
-    ? `${lead} plus ${guests.join(" and ")}`
-    : lead;
-  try {
-    const shot = await miniMaxChat(
-      [
-        "You are the shot designer on a gritty documentary-style survival reality show.",
-        `Turn the viewer's instruction into a rich English video-generation prompt for one ${LIVE_VIDEO_DURATION_SECONDS}-second clip.`,
-        "Rules:",
-        // Without this the instruction reads as one more note among a dozen, and the model writes
-        // another beat of whatever the last clip was doing instead.
-        "- THE INSTRUCTION IS THE CLIP. Dramatise the thing the viewer actually asked for, and have it start happening in the first beat. Everything else below shapes how it looks, never whether it happens.",
-        `- It is ONE continuous take with no cuts, but it must never be static. Break it into three escalating beats, roughly ${beatSeconds} seconds each, and write them as "0-${beatSeconds}s: ...".`,
-        "- Every beat is a NEW physical action or a NEW complication — something gives way, slips, tears, floods, catches. Never the same pose held throughout.",
-        "- Keep the camera moving the whole time and change the framing at least twice.",
-        "- Write concrete physical detail: what the hands grip, what slips, what splashes, what the wind and rain do.",
-        `- ${SAFE_PERIL_PROMPT}`,
-        `- The people in this shot are: ${cast}. Call them by these exact names throughout — never "the contestant" or "a survivor".`,
-        guests.length
-          ? `- ${guests.join(" and ")} appear alongside ${lead}; give them their own physical actions, do not leave them standing idle. No one outside this list appears.`
-          : `- ${lead} is the only person in frame. No new people.`,
-        moving
-          ? "- This shot is the journey itself: they physically leave where they are and arrive somewhere new. End the clip in the new place, not the old one."
-          // Flatly forbidding a location change vetoed every instruction that asked for one: a
-          // viewer said to reach the forest and camp, and the shot came back as another squeeze
-          // through the same tunnel wall.
-          : "- Keep every named person's identity and wardrobe unchanged. Stay where they are UNLESS the instruction takes them somewhere else — if it does, film the move and end the clip in the new place.",
-        "- End with one line starting 'Audio:' describing on-location sound only — no music, no narration.",
-        "- No on-screen text, subtitles, captions or graphics anywhere.",
-        "- Write the entire prompt in English, including any spoken line, even when the viewer wrote in Chinese or another language. No Chinese characters anywhere in your output.",
-        "Output only the prompt itself, no preamble and no headings.",
-      ].join("\n"),
-      [
-        `INSTRUCTION TO FILM (the "@name" marks are mentions of other contestants): ${viewerPrompt}`,
-        "",
-        "Context for how it should look:",
-        previousStory ? `- The previous clip ended with: ${previousStory}` : `- This opens ${lead}'s storyline.`,
-        moving
-          ? `- They are leaving that place. By the end of this clip they are in: ${story.setting} (${story.clock}).`
-          : `- Where they are as this starts: ${story.setting} (${story.clock}).`,
-        `- What everyone is trying to do right now: ${story.goal}`,
-        `- Condition: ${condition}`,
-        guests.length ? `- Also in this shot: ${guests.join(", ")}` : "",
-      ].filter(Boolean).join("\n"),
-      chatBudget(900),
-    );
-    return shot || "";
-  } catch {
-    return "";
-  }
-}
-
 async function promptsForViewerInput({
   viewerPrompt,
   participant,
   guests,
-  latestClip,
-  story,
-  moving,
 }: {
   viewerPrompt: string;
   participant: typeof participants.$inferSelect;
   guests: Array<typeof participants.$inferSelect>;
-  latestClip: typeof generations.$inferSelect | null;
-  story: StoryState;
-  moving: boolean;
 }) {
-  const previousStory = storyTextFromGeneration(latestClip);
   const condition = contestantCondition(participant);
   const guestNames = guests.map((item) => item.display_name);
-  const expanded = await expandViewerPrompt(viewerPrompt, condition, previousStory, participant.display_name, guestNames, story, moving);
   const cue = viewerPrompt;
-  const sharedContinuity = [
-    previousStory
-      ? `Continue from this clean visual memory: ${previousStory}.`
-      : `Opening situation: ${participant.display_name} is at ${story.setting}, ${story.clock}.`,
-    moving
-      ? `This shot is the move: they leave where they are and end it at ${story.setting}.`
-      : `Where the show is now: ${story.setting}, ${story.clock}.`,
-    `Chapter: ${story.phase}. What they are trying to do: ${story.goal}.`,
-    `Branch action: ${cue}.`,
-    `Physical condition: ${condition}.`,
-  ].join("\n");
-  // storyTextFromGeneration feeds this straight into the next clip's English prompt, so it must be
-  // the expanded English text — never the viewer's raw line.
-  const memorySource = expanded
-    ? cleanText(finalBeatOf(expanded), 600)
-    : `${participant.display_name} — ${cue}`;
+  const cast = guestNames.length
+    ? `${participant.display_name} and ${guestNames.join(" and ")}`
+    : participant.display_name;
+
+  // What the viewer asked for, and almost nothing else. The layers that used to sit between them
+  // and the camera each pulled the shot back toward where the show had already been: a written
+  // shot design that continued the previous beat, a visual memory that carried the last clip's
+  // sentence forward, and a chapter heading naming the location three separate times. The first
+  // frame is what holds a clip to the one before it — that is what it is for — so the words are
+  // free to be about what happens next.
   return {
     cue,
-    // The suffix here is chained straight into the next clip as previousStory, so it has to carry
-    // the CURRENT place. A hardcoded one re-injects itself forever and pins the show to it.
-    visualMemory: `${memorySource}; ${condition}; ${storyBackdrop(story)}; documentary handheld realism; no on-screen graphics`,
+    // Chained into the next clip as its opening line, so it stays a plain record of what was asked
+    // for. Nothing about the setting: describing the place here is what pinned the show to it.
+    visualMemory: `${participant.display_name} — ${cue}; ${condition}; documentary handheld realism; no on-screen graphics`,
     keyframePrompt: [
-      "Create a cinematic 16:9 opening frame for a survival challenge using the supplied contestant reference image.",
-      sharedContinuity,
-      `Frame: the supplied contestant is visibly starting this branch: ${cue}.`,
-      `Composition: documentary survival camera, grounded realism, readable face, tense body language, the light and weather of ${story.setting}, no duplicate person.`,
-      "Preserve the contestant identity, age, face, hairstyle, ethnicity, body proportions and outfit continuity from the reference.",
+      "Create a cinematic opening frame for a survival challenge using the supplied contestant reference image.",
+      `WHAT HAPPENS: ${cue}`,
+      `In shot: ${cast}. Preserve identity, age, face, hairstyle, ethnicity, body proportions and outfit from the reference.`,
+      "Composition: documentary survival camera, grounded realism, readable face, tense body language, no duplicate person.",
       NO_SCREEN_TEXT_PROMPT,
     ].join("\n"),
     videoPrompt: [
       `Continue the survival challenge for exactly ${LIVE_VIDEO_DURATION_SECONDS} seconds.`,
-      sharedContinuity,
-      // The expanded shot design already carries beats, camera moves and audio; the template is only
-      // the fallback for when the text model is unavailable.
-      expanded || [
-        `Action for ${participant.display_name} (the viewer's own words, possibly not in English): ${cue}. Perform exactly that; keep it physically plausible and readable within the clip.`,
-        guestNames.length ? `${guestNames.join(" and ")} are in shot alongside ${participant.display_name} and act too.` : "",
-        PACING_PROMPT,
-        FIELD_AUDIO_PROMPT,
-      ].filter(Boolean).join("\n"),
-      moving
-        ? "Continuity: preserve the first frame, contestant identity, wardrobe and camera style. The location is meant to change across this clip — travel to it on camera, do not cut to it."
-        : "Continuity: preserve the first frame, contestant identity, wardrobe, location, weather, color grade and camera style.",
+      // First and unmissable. Buried at the bottom under continuity notes, it read as one
+      // consideration among a dozen and the model went with the frame instead.
+      `WHAT HAPPENS — film exactly this, and start it in the first second: ${cue}`,
+      `The viewer wrote that themselves and may not have written it in English. Perform what it says; keep it physically plausible and readable within ${LIVE_VIDEO_DURATION_SECONDS} seconds.`,
+      guestNames.length
+        ? `${guestNames.join(" and ")} are in shot alongside ${participant.display_name} and act too. No one else appears.`
+        : `${participant.display_name} is the only person in frame.`,
+      `${participant.display_name} is ${condition.replace(`${participant.display_name} is `, "")}.`,
+      PACING_PROMPT,
+      FIELD_AUDIO_PROMPT,
+      "Continuity: preserve the contestant's identity, wardrobe and the camera style of the supplied frame. Where the action takes them is up to the instruction above.",
       NO_SCREEN_TEXT_PROMPT,
-      moving
-        ? "Avoid new people, face morphing, fantasy effects, sudden costume changes, or any hard cut."
-        : "Avoid new people, face morphing, fantasy effects, sudden costume changes, or jumping to a different location.",
+      "Avoid new people, face morphing, fantasy effects, sudden costume changes, or a hard cut to an unrelated scene.",
     ].join("\n"),
   };
 }
@@ -1199,6 +1114,7 @@ async function expandDirectorCut(sourceStory: string, timeline: string[], lead: 
         `Contestant visible in the frame: ${lead} — ${condition}`,
       ].join("\n"),
       chatBudget(900),
+      SHOT_DESIGN_MAX_CHARS,
     );
     return shot || "";
   } catch {
@@ -1229,7 +1145,7 @@ async function promptsForDirectorCut({
     `Physical condition: ${condition}.`,
   ].join("\n");
   return {
-    visualMemory: cleanText(expanded || `${sourceStory || recap}; ${storyBackdrop(story)}; documentary handheld realism; no on-screen graphics`, 600),
+    visualMemory: cleanText(expanded || `${sourceStory || recap}; documentary handheld realism; no on-screen graphics`, 600),
     keyframePrompt: [
       "Create a cinematic 16:9 broadcast frame for a survival challenge using the supplied opening frame.",
       sharedContinuity,
@@ -1511,7 +1427,6 @@ async function startQueuedGeneration(generation: typeof generations.$inferSelect
     generation.channel,
     generation.channel_participant_id,
   );
-  const moving = generation.channel === "participant" && owesTransition(ownerMatch, latestClip?.id ?? null);
   const queuedPrompt = (() => {
     try {
       return asObject(JSON.parse(generation.prompt || "{}"));
@@ -1539,12 +1454,6 @@ async function startQueuedGeneration(generation: typeof generations.$inferSelect
       viewerPrompt: generation.viewer_prompt ?? "",
       participant: lead,
       guests,
-      latestClip,
-      story,
-      // The story moved on without this channel, so its next shot is the walk to the new place.
-      // Breaking the frame chain instead would reopen on the character sheet, whose background is
-      // the beach we are trying to leave.
-      moving,
     });
 
   const keyframePrompt = cleanText(prompts.keyframePrompt, 3500);
@@ -1577,9 +1486,13 @@ async function startQueuedGeneration(generation: typeof generations.$inferSelect
     generation.channel === "director" ? DIRECTOR_AUDIO_PROMPT : FIELD_AUDIO_PROMPT,
     NO_SCREEN_TEXT_PROMPT,
     SAFE_PERIL_PROMPT,
-    moving
-      ? "The location changes across this take, on camera and without a cut. Avoid any hard cut, reset, new people, face morphing, or sudden costume changes."
-      : "Avoid any hard cut to a different scene, any reset, new location, new people, face morphing, or sudden costume changes.",
+    // A contestant clip is whatever the viewer asked for, so forbidding a new location here would
+    // veto half of what they ask for — walking somewhere is the commonest instruction there is. A
+    // director cut has no instruction of its own; it is a wide look at the shot it was cut from,
+    // and staying put is the whole point of it.
+    generation.channel === "director"
+      ? "Avoid any hard cut to a different scene, any reset, new location, new people, face morphing, or sudden costume changes."
+      : "Avoid a hard cut to an unrelated scene, a reset, new people, face morphing, or sudden costume changes. Moving somewhere new is fine if the instruction calls for it — travel there on camera rather than cutting.",
   ].filter(Boolean).join("\n");
 
   const videoTask = await createFalVideoTask(taskPrompt, opening.url, generation.duration_seconds);
@@ -2589,12 +2502,6 @@ function storyStateOf(match: typeof matches.$inferSelect): StoryState {
   };
 }
 
-// Where the show is, written for a video model. Every prompt that used to say "stormy remote coast"
-// says this instead.
-function storyBackdrop(story: StoryState) {
-  return `${story.setting}; ${story.clock}`;
-}
-
 // The model is asked for JSON but answers like a writer, sometimes fenced, sometimes with a
 // sentence in front. Take the outermost object and ignore the rest.
 function parseModelJson(raw: string) {
@@ -2868,12 +2775,6 @@ async function advanceStory(match: typeof matches.$inferSelect) {
   }
 }
 
-// A contestant channel whose newest clip predates the last relocation has not physically arrived
-// yet: its next shot is the journey, not another beat in the place it already left.
-function owesTransition(match: typeof matches.$inferSelect, latestClipId: number | null) {
-  if (match.story_reframe_after <= 0) return false;
-  return (latestClipId ?? 0) <= match.story_reframe_after;
-}
 
 async function maybeAdvanceHouseCast(match: typeof matches.$inferSelect) {
   const matchId = match.id;
