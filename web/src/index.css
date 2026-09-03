@@ -69,9 +69,16 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .viewer-count i::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; background: var(--brand); opacity: .35; animation: viewer-breathe 2.4s cubic-bezier(.4,0,.6,1) infinite; }
 @keyframes viewer-breathe { 0% { transform: scale(.55); opacity: .45; } 70% { transform: scale(1.5); opacity: 0; } 100% { transform: scale(1.5); opacity: 0; } }
 .viewer-faces { display: inline-flex; align-items: center; }
-.viewer-faces b { position: relative; width: 19px; height: 19px; margin-right: -6px; border-radius: 50%; background: hsl(var(--hue) 52% 62%); box-shadow: 0 0 0 1.5px var(--surface); display: grid; place-items: center; overflow: hidden; }
+.viewer-faces b { position: relative; width: 23px; height: 23px; margin-right: -7px; border-radius: 50%; background: hsl(var(--hue) 46% 88%); box-shadow: 0 0 0 1.5px var(--surface); display: grid; place-items: center; overflow: hidden; }
 .viewer-faces b:last-child { margin-right: 2px; }
-.viewer-faces em { font: 9px var(--utility); font-style: normal; font-weight: 700; color: #fff; animation: face-cycle .42s cubic-bezier(.2,.8,.3,1) both; }
+/* The chip is now a soft backdrop for a drawn face rather than the identity itself, so the letter
+   underneath has to read on a pale tint instead of a saturated one. */
+.viewer-faces em { font: 9px var(--utility); font-style: normal; font-weight: 700; color: hsl(var(--hue) 45% 32%); animation: face-cycle .42s cubic-bezier(.2,.8,.3,1) both; }
+/* Drawn faces sit over the lettered chip, which stays underneath as the fallback: a face that never
+   loads leaves an initial rather than an empty circle. Only position is animated — an opacity
+   entrance restarts every time the occupant changes, which leaves the thing invisible most of the
+   time on a list that rotates every few seconds. */
+.viewer-faces img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; animation: face-cycle .42s cubic-bezier(.2,.8,.3,1) both; }
 @keyframes face-cycle { from { transform: translateY(-9px); } }
 .text-action { border: 0; background: none; font: 11px var(--utility); color: var(--muted); cursor: pointer; padding: 9px 10px; border-radius: var(--r-sm); transition: background .16s ease, color .16s ease; }
 .text-action:hover { background: var(--surface-3); color: var(--text); }

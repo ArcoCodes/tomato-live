@@ -9,6 +9,17 @@ function initialOf(handle: string) {
   return (stripped || handle).slice(0, 1).toUpperCase();
 }
 
+// Illustrated faces from a seed, so the same handle is always the same person. Fetched rather than
+// bundled: the drawing library unpacks to well over 400KB, which is a poor trade for a decorative
+// header element on a page that has just been through a performance pass. These are a few KB of SVG
+// the browser caches for good, and a face that fails to load falls back to the lettered chip.
+const FACE_STYLE = "notionists";
+
+function faceUrl(handle: string) {
+  const seed = encodeURIComponent(handle);
+  return `https://api.dicebear.com/9.x/${FACE_STYLE}/svg?seed=${seed}&backgroundColor=transparent&radius=50`;
+}
+
 /** Stable colour per handle, so the same person keeps the same chip between rotations. */
 function hueOf(handle: string) {
   let hash = 0;
@@ -44,7 +55,10 @@ export function ViewerCount({ count, handles }: { count: number; handles: string
           {shown.map((handle, index) => (
             // Keyed by slot, not by handle: the chip stays put and its occupant fades over.
             <b key={index} style={{ "--hue": hueOf(handle), zIndex: FACES_SHOWN - index } as React.CSSProperties}>
+              {/* The initial sits underneath as the fallback: if the drawing never arrives the chip
+                  still reads as a person rather than as an empty hole. */}
               <em key={handle}>{initialOf(handle)}</em>
+              <img key={`${handle}-face`} src={faceUrl(handle)} alt="" loading="lazy" decoding="async" />
             </b>
           ))}
         </span>
