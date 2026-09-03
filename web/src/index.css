@@ -78,16 +78,16 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .eyebrow { font: 8px var(--utility); letter-spacing: .18em; color: var(--faint); }
 .alive-count, .signal { font: 8px var(--utility); letter-spacing: .08em; color: var(--brand); font-weight: 600; }
 .roster-list { overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
-.roster-list { padding: 14px; display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px; align-content: start; }
+.roster-list { padding: 14px; display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); grid-auto-rows: max-content; gap: 14px; align-content: start; }
 .hero-card { --accent: var(--brand); position: relative; display: flex; flex-direction: column; border-radius: var(--r-lg); overflow: hidden; background: var(--surface-2); box-shadow: 0 1px 2px rgba(38,28,22,.06), 0 6px 18px rgba(38,28,22,.07); transition: transform .2s cubic-bezier(.2,.8,.3,1), box-shadow .2s ease; }
 .hero-card::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px rgb(38 28 22 / .07); pointer-events: none; }
 .hero-card:hover { transform: translateY(-3px); box-shadow: 0 2px 4px rgba(38,28,22,.07), 0 14px 30px rgba(38,28,22,.13); }
-.hero-portrait { position: relative; aspect-ratio: 1; overflow: hidden; background: var(--accent); display: grid; place-items: center; }
-.hero-portrait img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.hero-portrait i { color: #fff; font: 22px var(--display); font-style: normal; }
+.hero-portrait { position: relative; flex: none; overflow: hidden; background: var(--accent); }
+.hero-portrait img { width: 100%; height: auto; aspect-ratio: 1; object-fit: cover; display: block; }
+.hero-portrait i { display: grid; place-items: center; width: 100%; aspect-ratio: 1; color: #fff; font: 22px var(--display); font-style: normal; }
 .hero-status { position: absolute; left: 8px; bottom: 8px; padding: 3px 9px; border-radius: var(--r-pill); background: rgb(25 21 18 / .72); color: #fdfaf8; font: 8px var(--utility); font-weight: 600; letter-spacing: .08em; backdrop-filter: blur(6px); }
 .hero-you { position: absolute; right: 8px; top: 8px; padding: 3px 8px; border-radius: var(--r-pill); background: var(--brand); color: #fff; font: 8px var(--utility); font-weight: 600; letter-spacing: .1em; }
-.hero-meta { display: flex; flex-direction: column; gap: 3px; padding: 12px 14px 14px; border-top: 2px solid var(--accent); }
+.hero-meta { display: flex; flex: none; flex-direction: column; gap: 3px; padding: 12px 14px 14px; border-top: 2px solid var(--accent); }
 .hero-meta strong { font: 18px var(--display); font-weight: 400; letter-spacing: .03em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hero-meta span { color: var(--muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hero-card.is-you { box-shadow: 0 0 0 2px var(--brand), 0 10px 24px rgba(230,75,34,.18); }
