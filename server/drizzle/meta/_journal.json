@@ -134,6 +134,13 @@
       "when": 1788424043971,
       "tag": "0018_next_killmonger",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1788425295517,
+      "tag": "0019_nebulous_forge",
+      "breakpoints": true
     }
   ]
 }

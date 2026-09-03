@@ -106,6 +106,9 @@ export const participants = sqliteTable("participants", {
   // Written once by a vision model from the character sheet. H3-Max sees only the opening frame, so
   // this text is what stops the contestant drifting over a long tail-frame chain.
   appearance: text("appearance"),
+  // Where this contestant sits in the channel strip. Low numbers first, ties broken by id, so a
+  // newly claimed character falls in at the end rather than jumping the seeded cast.
+  display_order: integer("display_order").notNull().default(100),
   // House cast: seeded, not claimable, and preferred when the director picks whose footage to cut to.
   is_system: integer("is_system", { mode: "boolean" }).notNull().default(false),
   joined_at: text("joined_at").notNull().default(sql`(current_timestamp)`),

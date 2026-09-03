@@ -1,0 +1,1 @@
+ALTER TABLE `participants` ADD `display_order` integer DEFAULT 100 NOT NULL;
