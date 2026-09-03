@@ -1770,6 +1770,11 @@ const DIRECTOR_SOURCE_WINDOW = 150;
 // none of it is ever sent to anyone.
 // How much archive a viewer pulls in one go. Small enough that a page lands quickly on a phone,
 // and each page is ten more thumbnails to decode.
+// A page of room history. Larger than the clip pages: a line of text costs a fraction of a card
+// with a thumbnail behind it.
+const CHAT_PAGE_SIZE = 30;
+const CHAT_PAGE_MAX = 60;
+
 const ARCHIVE_PAGE_SIZE = 10;
 const ARCHIVE_PAGE_MAX = 20;
 
@@ -3497,6 +3502,40 @@ const app = new Hono()
     return c.json({ ...payload, generated_at: new Date().toISOString() }, 200, {
       ETag: etag,
       "Cache-Control": "private, no-cache",
+    });
+  })
+  // Older chat, a page at a time, for the same reason the archive has one: the live payload carries
+  // a tail the heartbeat can afford to repeat, and reaching past it should cost only the person who
+  // asks. Ranked exactly like the room itself, so a page reads as the room did at the time.
+  .get("/api/public/chat", async (c) => {
+    const match = await ensureLiveMatch();
+    const before = Number(c.req.query("before"));
+    const limit = Math.min(Math.max(Number(c.req.query("limit")) || CHAT_PAGE_SIZE, 1), CHAT_PAGE_MAX);
+    const rows = await db.select().from(chatMessages)
+      .where(and(
+        eq(chatMessages.match_id, match.id),
+        Number.isInteger(before) && before > 0 ? lt(chatMessages.id, before) : undefined,
+      ))
+      .orderBy(desc(chatMessages.id))
+      .limit(limit + 1);
+
+    const page = rows.slice(0, limit);
+    const clipIds = [...new Set(page.map((row) => row.generation_id).filter((id): id is number => id != null))];
+    const stages = clipIds.length
+      ? await db.select({ id: generations.id, stage: generations.stage }).from(generations)
+        .where(inArray(generations.id, clipIds))
+      : [];
+    const stageOf = new Map(stages.map((row) => [row.id, row.stage as string]));
+    // Read before the reverse below, not after: reverse mutates in place, and a cursor that depended
+    // on property evaluation order would flip from oldest to newest on any harmless reordering.
+    const oldest = page.length ? page[page.length - 1].id : null;
+    return c.json({
+      // Oldest first, matching the live payload: the room reads top to bottom.
+      chat: page.reverse().map((row) => chatPayload(
+        row,
+        row.generation_id == null ? null : stageOf.get(row.generation_id) ?? null,
+      )),
+      next_cursor: rows.length > limit ? oldest : null,
     });
   })
   // Older footage, a page at a time. The live payload carries only the recent window — it is polled

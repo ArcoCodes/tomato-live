@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { deviceHeaders } from "@/lib/device";
 import { client } from "@/lib/edgespark";
@@ -43,6 +43,52 @@ export function ChatRoom({ messages, participants, waiting, allowance, onShowCli
   const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const pinnedRef = useRef(true);
+  // Room history, older than the tail the heartbeat carries. Held here rather than merged into the
+  // feed the parent polls, which is replaced wholesale every few seconds.
+  const [older, setOlder] = useState<ChatMessage[]>([]);
+  const [historyCursor, setHistoryCursor] = useState<number | null>(null);
+  const [historyDone, setHistoryDone] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  // Prepending to a scrolled list moves everything under the reader. Measured before the paint,
+  // corrected after, so the line they were reading stays exactly where it was.
+  const anchorRef = useRef<number | null>(null);
+
+  const seenIds = new Set(messages.map((item) => item.id));
+  const shown = [...older.filter((item) => !seenIds.has(item.id)), ...messages];
+
+  async function loadEarlier() {
+    if (loadingHistory || historyDone) return;
+    const oldestOnScreen = shown.length ? shown[0].id : null;
+    const before = historyCursor ?? oldestOnScreen;
+    if (before == null) return;
+    setLoadingHistory(true);
+    const el = listRef.current;
+    anchorRef.current = el ? el.scrollHeight - el.scrollTop : null;
+    try {
+      const response = await fetch(`/api/public/chat?limit=30&before=${before}`);
+      if (!response.ok) throw new Error("history page failed");
+      const data = await response.json() as { chat: ChatMessage[]; next_cursor: number | null };
+      setOlder((current) => {
+        const held = new Set(current.map((item) => item.id));
+        return [...data.chat.filter((item) => !held.has(item.id)), ...current];
+      });
+      setHistoryCursor(data.next_cursor);
+      setHistoryDone(data.next_cursor == null);
+    } catch {
+      // Leave the cursor be so the same page can be asked for again.
+      anchorRef.current = null;
+    } finally {
+      setLoadingHistory(false);
+    }
+  }
+
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    const anchor = anchorRef.current;
+    if (!el || anchor == null) return;
+    el.scrollTop = el.scrollHeight - anchor;
+    anchorRef.current = null;
+  }, [older]);
 
   const byName = new Map(participants.map((item) => [item.display_name.toLowerCase(), item]));
   const query = trigger?.query.toLowerCase() ?? "";
@@ -164,9 +210,14 @@ export function ChatRoom({ messages, participants, waiting, allowance, onShowCli
           pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
         }}
       >
-        {messages.length === 0
+        {shown.length && !historyDone ? (
+          <button type="button" className="chat-earlier" onClick={loadEarlier} disabled={loadingHistory}>
+            {loadingHistory ? "Loading…" : "Earlier messages"}
+          </button>
+        ) : null}
+        {shown.length === 0
           ? <p className="chat-empty">Nobody has spoken yet. Write a line and the director films it as the next clip.<br />Use <b>@name</b> to cast someone — everyone you name shows up in the same shot.</p>
-          : messages.map((message) => (
+          : shown.map((message) => (
             <div className={message.filmed ? "chat-line is-filmed" : "chat-line"} key={message.id}>
               <span className="chat-who">{message.display_name}</span>
               <p>{renderBody(message.body, byName)}</p>
