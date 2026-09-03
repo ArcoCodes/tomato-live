@@ -1,0 +1,1 @@
+CREATE INDEX `generations_match_stage_idx` ON `generations` (`match_id`,`stage`,`id`);

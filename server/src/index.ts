@@ -222,6 +222,12 @@ function md5Hex(buffer: ArrayBuffer) {
   )).join("");
 }
 
+// How often the show is allowed to advance itself, per isolate. Short enough that the broadcast
+// still feels immediate, long enough that a hundred watching browsers cost about what one does.
+const ADVANCE_MIN_INTERVAL_MS = 4000;
+let lastAdvanceAt = 0;
+class SkipAdvance extends Error {}
+
 async function ensureLiveMatch() {
   await db.insert(matches).values({
     slug: LIVE_SLUG,
@@ -238,20 +244,43 @@ async function ensureLiveMatch() {
   return match;
 }
 
+// Signing is a round trip, and the roster alone needs eight of them. Each signature is good for an
+// hour, yet every heartbeat from every browser was asking for a fresh set. Holding them for ten
+// minutes on the isolate keeps a wide margin under the hour and takes the round trips out of the
+// hot path; a cold isolate just signs again.
+const PRESIGN_TTL_MS = 10 * 60 * 1000;
+const PRESIGN_CACHE_MAX = 400;
+const presignCache = new Map<string, { url: string; until: number }>();
+
+async function presignedUrl(s3Uri: string) {
+  const now = Date.now();
+  const hit = presignCache.get(s3Uri);
+  if (hit && hit.until > now) return hit.url;
+  const parsed = storage.tryParseS3Uri(s3Uri);
+  if (!parsed) return null;
+  const signed = await storage.from(parsed.bucket).createPresignedGetUrl(parsed.path, 3600);
+  // Insertion order is eviction order, and the archive only grows, so drop the oldest entries
+  // rather than letting the isolate hold every clip it has ever served.
+  if (presignCache.size >= PRESIGN_CACHE_MAX) {
+    for (const key of presignCache.keys()) {
+      presignCache.delete(key);
+      if (presignCache.size < PRESIGN_CACHE_MAX * 0.8) break;
+    }
+  }
+  presignCache.set(s3Uri, { url: signed.downloadUrl, until: now + PRESIGN_TTL_MS });
+  return signed.downloadUrl;
+}
+
 async function avatarUrl(s3Uri: string | null) {
   if (!s3Uri) return null;
-  const parsed = storage.tryParseS3Uri(s3Uri);
-  if (!parsed) return s3Uri.startsWith("https://") ? s3Uri : null;
-  const signed = await storage.from(parsed.bucket).createPresignedGetUrl(parsed.path, 3600);
-  return signed.downloadUrl;
+  if (!storage.tryParseS3Uri(s3Uri)) return s3Uri.startsWith("https://") ? s3Uri : null;
+  return await presignedUrl(s3Uri);
 }
 
 async function clipUrl(value: string | null) {
   if (!value) return null;
-  const parsed = storage.tryParseS3Uri(value);
-  if (!parsed) return value.startsWith("https://") ? value : null;
-  const signed = await storage.from(parsed.bucket).createPresignedGetUrl(parsed.path, 3600);
-  return signed.downloadUrl;
+  if (!storage.tryParseS3Uri(value)) return value.startsWith("https://") ? value : null;
+  return await presignedUrl(value);
 }
 
 function requireMiniMax() {
@@ -602,7 +631,7 @@ async function expandCharacterConcept(displayName: string, concept: string): Pro
         '{"archetype": "a 1-3 word English identity label", "role": "the same identity as a short English noun phrase", "signature": "one English sentence naming the single distinctive feature", "wardrobe": "one English sentence: the outfit layer by layer with exact colours and materials", "appearance": "ONE dense English paragraph under 110 words covering face shape and features, skin tone, hair, build, then the outfit layer by layer, then the distinctive signature. Plain concrete words. No name, no story, no camera or lighting talk."}',
       ].join("\n"),
       `Contestant name: ${displayName}\nViewer description: ${concept}`,
-      900,
+      chatBudget(900),
     );
     const parsed = extractJsonObject(raw);
     if (!parsed) return fallback;
@@ -913,7 +942,8 @@ function buildStoryChoices(
   match: typeof matches.$inferSelect,
   roster: Array<typeof participants.$inferSelect>,
   events: Array<typeof matchEvents.$inferSelect>,
-  latestClip: typeof generations.$inferSelect | null,
+  // Only the summary is read, so this takes the trimmed clip row the live payload builds from.
+  latestClip: { summary: string | null } | null,
 ) {
   if (roster.length === 0) return [];
   const latestStory = cleanText(latestClip?.summary, 200);
@@ -991,6 +1021,9 @@ async function expandViewerPrompt(
         "You are the shot designer on a gritty documentary-style survival reality show.",
         `Turn the viewer's instruction into a rich English video-generation prompt for one ${LIVE_VIDEO_DURATION_SECONDS}-second clip.`,
         "Rules:",
+        // Without this the instruction reads as one more note among a dozen, and the model writes
+        // another beat of whatever the last clip was doing instead.
+        "- THE INSTRUCTION IS THE CLIP. Dramatise the thing the viewer actually asked for, and have it start happening in the first beat. Everything else below shapes how it looks, never whether it happens.",
         `- It is ONE continuous take with no cuts, but it must never be static. Break it into three escalating beats, roughly ${beatSeconds} seconds each, and write them as "0-${beatSeconds}s: ...".`,
         "- Every beat is a NEW physical action or a NEW complication — something gives way, slips, tears, floods, catches. Never the same pose held throughout.",
         "- Keep the camera moving the whole time and change the framing at least twice.",
@@ -1002,23 +1035,28 @@ async function expandViewerPrompt(
           : `- ${lead} is the only person in frame. No new people.`,
         moving
           ? "- This shot is the journey itself: they physically leave where they are and arrive somewhere new. End the clip in the new place, not the old one."
-          : "- Keep every named person's identity, wardrobe and location unchanged.",
+          // Flatly forbidding a location change vetoed every instruction that asked for one: a
+          // viewer said to reach the forest and camp, and the shot came back as another squeeze
+          // through the same tunnel wall.
+          : "- Keep every named person's identity and wardrobe unchanged. Stay where they are UNLESS the instruction takes them somewhere else — if it does, film the move and end the clip in the new place.",
         "- End with one line starting 'Audio:' describing on-location sound only — no music, no narration.",
         "- No on-screen text, subtitles, captions or graphics anywhere.",
         "- Write the entire prompt in English, including any spoken line, even when the viewer wrote in Chinese or another language. No Chinese characters anywhere in your output.",
         "Output only the prompt itself, no preamble and no headings.",
       ].join("\n"),
       [
-        previousStory ? `Previous clip ended with: ${previousStory}` : `This opens ${lead}'s storyline.`,
+        `INSTRUCTION TO FILM (the "@name" marks are mentions of other contestants): ${viewerPrompt}`,
+        "",
+        "Context for how it should look:",
+        previousStory ? `- The previous clip ended with: ${previousStory}` : `- This opens ${lead}'s storyline.`,
         moving
-          ? `They are leaving that place. By the end of this clip they are in: ${story.setting} (${story.clock}).`
-          : `Where this is happening: ${story.setting} (${story.clock}).`,
-        `What everyone is trying to do right now: ${story.goal}`,
-        `Condition: ${condition}`,
-        guests.length ? `Also in this shot: ${guests.join(", ")}` : "",
-        `Viewer instruction (the "@name" marks are mentions of other contestants): ${viewerPrompt}`,
+          ? `- They are leaving that place. By the end of this clip they are in: ${story.setting} (${story.clock}).`
+          : `- Where they are as this starts: ${story.setting} (${story.clock}).`,
+        `- What everyone is trying to do right now: ${story.goal}`,
+        `- Condition: ${condition}`,
+        guests.length ? `- Also in this shot: ${guests.join(", ")}` : "",
       ].filter(Boolean).join("\n"),
-      900,
+      chatBudget(900),
     );
     return shot || "";
   } catch {
@@ -1128,7 +1166,7 @@ async function expandDirectorCut(sourceStory: string, timeline: string[], lead: 
         timeline.length ? `Story so far: ${timeline.join(" ")}` : "This is early in the match.",
         `Contestant visible in the frame: ${lead} — ${condition}`,
       ].join("\n"),
-      900,
+      chatBudget(900),
     );
     return shot || "";
   } catch {
@@ -1691,9 +1729,40 @@ async function summarizeClip(generation: typeof generations.$inferSelect) {
 
 // Round-robin across contestant channels: whoever has fresh footage and has waited longest since the
 // director last cut to them goes next.
+// How far back the director looks for footage. Candidates are only ever the newest clip per
+// contestant, and a cut that used one of those is recent too, so nothing older can change the answer.
+const DIRECTOR_SOURCE_WINDOW = 150;
+
+// Exactly what the live payload reads back out. Selecting whole rows dragged the prompt column with
+// every clip — several kilobytes each, sixty of them, on every heartbeat from every browser — and
+// none of it is ever sent to anyone.
+const CLIP_PAYLOAD_COLUMNS = {
+  id: generations.id,
+  round: generations.round,
+  stage: generations.stage,
+  duration_seconds: generations.duration_seconds,
+  channel: generations.channel,
+  channel_participant_id: generations.channel_participant_id,
+  participant_ids: generations.participant_ids,
+  source_generation_id: generations.source_generation_id,
+  summary: generations.summary,
+  result_url: generations.result_url,
+  thumbnail_url: generations.thumbnail_url,
+  created_at: generations.created_at,
+} as const;
+
 async function pickDirectorSource(match: typeof matches.$inferSelect) {
   const matchId = match.id;
-  const clips = await db.select().from(generations)
+  // Four columns and a bounded window, deliberately. Selecting whole rows with no limit meant every
+  // heartbeat pulled every finished clip the show had ever made — prompt payloads included, tens of
+  // megabytes of them — and that is what put the database over its memory limit and took the live
+  // endpoint down. Only the newest clip per contestant can ever be picked, so this window is plenty.
+  const clips = await db.select({
+    id: generations.id,
+    channel_participant_id: generations.channel_participant_id,
+    thumbnail_url: generations.thumbnail_url,
+    participant_ids: generations.participant_ids,
+  }).from(generations)
     .where(and(
       eq(generations.match_id, matchId),
       eq(generations.channel, "participant"),
@@ -1703,17 +1772,22 @@ async function pickDirectorSource(match: typeof matches.$inferSelect) {
       // the broadcast back in a place the story has left. Better to wait a beat than to cut there.
       gte(generations.id, match.story_reframe_after),
     ))
-    .orderBy(desc(generations.id));
-  const newestByParticipant = new Map<number, typeof generations.$inferSelect>();
+    .orderBy(desc(generations.id))
+    .limit(DIRECTOR_SOURCE_WINDOW);
+  const newestByParticipant = new Map<number, (typeof clips)[number]>();
   for (const clip of clips) {
     const pid = clip.channel_participant_id;
     if (pid != null && !newestByParticipant.has(pid)) newestByParticipant.set(pid, clip);
   }
   if (newestByParticipant.size === 0) return null;
 
-  const directorClips = await db.select().from(generations)
+  const directorClips = await db.select({
+    id: generations.id,
+    source_generation_id: generations.source_generation_id,
+  }).from(generations)
     .where(and(eq(generations.match_id, matchId), eq(generations.channel, "director"), isNotNull(generations.source_generation_id)))
-    .orderBy(desc(generations.id));
+    .orderBy(desc(generations.id))
+    .limit(DIRECTOR_SOURCE_WINDOW);
   const sourceIds = new Set(directorClips.map((clip) => clip.source_generation_id!));
   const lastCutAt = new Map<number, number>();
   for (const director of directorClips) {
@@ -2504,10 +2578,14 @@ async function maybeAdvanceHouseCast(match: typeof matches.$inferSelect) {
     if (!cast.length) return null;
     const busy = new Set(active.map((item) => item.channel_participant_id));
 
+    // Only the newest clip per contestant is read out of this, so a window that comfortably covers
+    // the whole cast is enough. Unbounded, it sorted every clip the show had ever filmed on every
+    // heartbeat, and the cost grew with the archive.
     const clipRows = await db.select({ pid: generations.channel_participant_id, id: generations.id })
       .from(generations)
       .where(and(eq(generations.match_id, matchId), eq(generations.channel, "participant")))
-      .orderBy(desc(generations.id));
+      .orderBy(desc(generations.id))
+      .limit(80);
     const lastClip = new Map<number, number>();
     for (const row of clipRows) {
       if (row.pid != null && !lastClip.has(row.pid)) lastClip.set(row.pid, row.id);
@@ -2840,18 +2918,32 @@ const app = new Hono()
   })
   .get("/api/public/live", async (c) => {
     const match = await ensureLiveMatch();
-    await markWatching(match.id, deviceIdOf(c));
-    // There is no scheduler here, so the house cast advances on the back of the viewer heartbeat.
-    await maybeSeedChat(match);
-    // Before anything asks for a slot, give back the ones nothing is using any more.
-    await reapStalledGenerations(match.id);
-    const turned = await advanceStory(match);
-    const current = turned ? await ensureLiveMatch() : match;
-    // The director line is normally chained off a tail frame landing. If every slot happened to be
-    // busy at that exact moment the cut was simply lost, with nothing to retry it — which is how it
-    // went an hour without filming. Giving it first refusal on each tick is that retry.
-    await maybeStartDirectorClip(current);
-    await maybeAdvanceHouseCast(current);
+    // There is no scheduler here, so the show advances on the back of the viewer heartbeat — but it
+    // only has to advance once, not once per watching browser. Every viewer running the full seed /
+    // reap / story / director / cast pass every nine seconds multiplied the database load by the
+    // size of the audience, which is what put it over the edge. The gap checks inside each step
+    // already decide whether anything happens; this just stops paying to ask.
+    const sinceAdvance = Date.now() - lastAdvanceAt;
+    let current = match;
+    try {
+      if (sinceAdvance < ADVANCE_MIN_INTERVAL_MS) throw new SkipAdvance();
+      lastAdvanceAt = Date.now();
+      await markWatching(match.id, deviceIdOf(c));
+      await maybeSeedChat(match);
+      // Before anything asks for a slot, give back the ones nothing is using any more.
+      await reapStalledGenerations(match.id);
+      const turned = await advanceStory(match);
+      if (turned) current = await ensureLiveMatch();
+      // The director line is normally chained off a tail frame landing. If every slot happened to be
+      // busy at that exact moment the cut was simply lost, with nothing to retry it — which is how
+      // it went an hour without filming. Giving it first refusal on each tick is that retry.
+      await maybeStartDirectorClip(current);
+      await maybeAdvanceHouseCast(current);
+    } catch (error) {
+      if (!(error instanceof SkipAdvance)) {
+        console.error("[heartbeat] advance failed", error instanceof Error ? error.message : String(error));
+      }
+    }
     const [roster, allEvents, clips, pendingGenerations] = await Promise.all([
       db.select().from(participants)
         .where(and(
@@ -2863,8 +2955,10 @@ const app = new Hono()
         // find them again. This is the order the channel strip shows.
         .orderBy(participants.display_order, participants.id),
       db.select().from(matchEvents).where(eq(matchEvents.match_id, match.id)).orderBy(desc(matchEvents.id)).limit(50),
-      db.select().from(generations).where(and(eq(generations.match_id, match.id), eq(generations.stage, "completed"))).orderBy(desc(generations.id)).limit(60),
-      db.select().from(generations)
+      db.select(CLIP_PAYLOAD_COLUMNS).from(generations)
+        .where(and(eq(generations.match_id, match.id), eq(generations.stage, "completed")))
+        .orderBy(desc(generations.id)).limit(60),
+      db.select(CLIP_PAYLOAD_COLUMNS).from(generations)
         .where(and(eq(generations.match_id, match.id), inArray(generations.stage, ["queued", "keyframe", "video"])))
         .orderBy(desc(generations.id)),
     ]);
@@ -2892,7 +2986,7 @@ const app = new Hono()
       .map((item) => item.generation_id)
       .filter((id): id is number => id != null && !haveClipIds.has(id)))];
     const referencedClips = missingClipIds.length
-      ? await db.select().from(generations).where(and(
+      ? await db.select(CLIP_PAYLOAD_COLUMNS).from(generations).where(and(
         eq(generations.match_id, match.id),
         eq(generations.stage, "completed"),
         inArray(generations.id, missingClipIds),

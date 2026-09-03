@@ -260,6 +260,9 @@ export const generations = sqliteTable("generations", {
   index("generations_match_idx").on(table.match_id),
   index("generations_stage_idx").on(table.stage),
   index("generations_channel_idx").on(table.match_id, table.channel, table.channel_participant_id, table.id),
+  // The live payload's own query: this match's finished clips, newest first. Without the id in the
+  // index every heartbeat sorted the whole table to take sixty rows off the end of it.
+  index("generations_match_stage_idx").on(table.match_id, table.stage, table.id),
   // Director cuts run concurrently now, and two of them racing on the same contestant clip would
   // air the same beat twice. The read-then-write guard in pickDirectorSource already lost that race
   // once, so the constraint lives here.
