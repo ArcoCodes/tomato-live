@@ -2150,8 +2150,42 @@ function deviceIdOf(c: { req: { header(name: string): string | undefined } }) {
   return /^[A-Za-z0-9_-]{8,64}$/.test(raw) ? raw : "";
 }
 
+// A signed-out viewer used to be "guest-3f9a" while the seeded room went by kaito92 and bugbear,
+// which told everyone at a glance which half of the chat was ours — the bots looked more like people
+// than the people did. Anonymous viewers get a handle in the same register now, drawn from their
+// device id so it is theirs and stays theirs.
+const HANDLE_HEADS = [
+  "moss", "tin", "salt", "ember", "drift", "husk", "pine", "static", "clove", "rusty",
+  "lint", "gull", "brack", "sable", "quiet", "nomad", "vellum", "crow", "fen", "onyx",
+  "wick", "bramble", "slate", "harbor", "junco", "marrow",
+];
+const HANDLE_TAILS = [
+  "wolf", "lamp", "creek", "gore", "spin", "hollow", "bit", "reef", "cask", "vane",
+  "pitch", "lark", "mote", "drum", "vault", "cider", "loom", "flint", "prowl", "tide",
+];
+
+function handleHash(value: string) {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash;
+}
+
 function guestHandle(deviceId: string) {
-  return `guest-${deviceId.replace(/[^A-Za-z0-9]/g, "").slice(-4).toLowerCase() || "0000"}`;
+  if (!deviceId) return "someone";
+  const hash = handleHash(deviceId);
+  const head = HANDLE_HEADS[hash % HANDLE_HEADS.length];
+  const tail = HANDLE_TAILS[(hash >>> 8) % HANDLE_TAILS.length];
+  // The seeded handles vary in shape — mossy, nine_lives, kaito92 — so these do too, or every real
+  // viewer would share one silhouette and be just as easy to pick out.
+  switch ((hash >>> 16) % 4) {
+    case 0: return `${head}${tail}`;
+    case 1: return `${head}_${tail}`;
+    case 2: return `${head}${tail}${(hash >>> 20) % 90 + 10}`;
+    default: return `${head}${(hash >>> 24) % 9 + 1}${tail}`;
+  }
 }
 
 async function viewerTier(deviceId: string) {
