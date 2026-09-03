@@ -309,7 +309,7 @@ async function clipUrl(value: string | null) {
   return await presignedUrl(value);
 }
 
-// The broadcast-clips bucket is public behind a custom domain, so finished clips and tail frames
+// The broadcast-clips bucket is public behind this custom domain, so finished clips and tail frames
 // can be handed to the browser as plain addresses. That takes the video bytes off the Worker
 // entirely: Cloudflare caches them at the edge, Range requests go straight to R2, and the address
 // never changes, so <video> never reloads. The bucket's CORS policy is what lets the tail-frame
@@ -318,12 +318,11 @@ const PUBLIC_MEDIA_BASE_URL = "https://video.renoise.live";
 
 function publicMediaUrl(s3Uri: string | null) {
   if (!s3Uri) return null;
-  const base = PUBLIC_MEDIA_BASE_URL;
   const parsed = storage.tryParseS3Uri(s3Uri);
   // Only the broadcast bucket is meant to be public; anything else keeps its signed address.
   if (!parsed || parsed.bucket.bucket_name !== buckets.broadcastClips.bucket_name) return null;
   const path = parsed.path.split("/").map(encodeURIComponent).join("/");
-  return `${base}/${parsed.bucket.bucket_name}/${path}`;
+  return `${PUBLIC_MEDIA_BASE_URL}/${parsed.bucket.bucket_name}/${path}`;
 }
 
 // ── fal ──────────────────────────────────────────────────────────────────────
