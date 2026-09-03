@@ -385,6 +385,7 @@ function App() {
 
       <footer>
         <span>© 2026 RENOISE LIVE / POWERED BY EDGESPARK + MINIMAX</span>
+        <span className="legal-note">Any resemblance to real persons is purely coincidental.</span>
         <div>
           {isAuthenticated && <button onClick={() => void handleSignOut()}>{user?.email} · Sign out</button>}
           <span>LIVE LATENCY 12.4S</span>

@@ -37,6 +37,7 @@ export function ChatRoom({ messages, participants, waiting, allowance, onShowCli
   const [trigger, setTrigger] = useState<{ at: number; query: string } | null>(null);
   const [unlock, setUnlock] = useState<ChatUnlock | null>(null);
   const [unlocking, setUnlocking] = useState(false);
+  const [unlockError, setUnlockError] = useState("");
   const [spent, setSpent] = useState(false);
   const [pickIndex, setPickIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -118,18 +119,24 @@ export function ChatRoom({ messages, participants, waiting, allowance, onShowCli
 
   async function claimUnlock(step: ChatUnlock) {
     setUnlocking(true);
+    setUnlockError("");
     try {
       const response = await client.api.fetch("/api/public/chat/unlock", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...deviceHeaders },
         body: JSON.stringify({ step: step.key }),
+        // The click opens a tab and this page goes to the background mid-request, which is exactly
+        // what keepalive is for — without it the browser is free to drop it and the turns are lost.
+        keepalive: true,
       });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "Could not unlock");
+      // Already claimed is a success from here: the turns are on the account either way.
+      if (!response.ok && response.status !== 409) throw new Error(result.error || "Could not unlock");
       setUnlock(null);
       onSent();
     } catch (cause) {
-      setNotice(cause instanceof Error ? cause.message : "Could not unlock");
+      // Keep the dialog up so the viewer can try again; the notice behind it is not visible.
+      setUnlockError(cause instanceof Error ? cause.message : "Could not unlock");
     } finally {
       setUnlocking(false);
     }
@@ -224,6 +231,7 @@ export function ChatRoom({ messages, participants, waiting, allowance, onShowCli
           </button>
         </div>
         {notice ? <p className="chat-notice">{notice}</p> : null}
+        <p className="legal-note is-phone">Any resemblance to real persons is purely coincidental.</p>
         {spent && !unlock ? <p className="chat-notice">You are out of messages. Thanks for pushing the story this far.</p> : null}
       </div>
 
@@ -245,7 +253,8 @@ export function ChatRoom({ messages, participants, waiting, allowance, onShowCli
             >
               {unlocking ? "Unlocking…" : unlock.cta} <span>↗</span>
             </a>
-            <button type="button" className="chat-unlock-close" onClick={() => setUnlock(null)}>Maybe later</button>
+            {unlockError ? <p className="chat-unlock-error">{unlockError} — tap again to retry.</p> : null}
+            <button type="button" className="chat-unlock-close" onClick={() => { setUnlock(null); setUnlockError(""); }}>Maybe later</button>
           </div>
         </div>
       ), document.body) : null}
