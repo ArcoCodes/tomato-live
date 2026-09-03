@@ -1675,7 +1675,8 @@ const VIEWER_PRESENCE_WINDOW_SECONDS = 45;
 async function markWatching(matchId: number, deviceId: string) {
   if (!deviceId) return;
   await db.insert(viewerPresence)
-    .values({ match_id: matchId, device_id: deviceId })
+    // first_seen is only written on insert, so it keeps the arrival even as last_seen moves.
+    .values({ match_id: matchId, device_id: deviceId, first_seen: sql`current_timestamp` as unknown as string })
     .onConflictDoUpdate({
       target: viewerPresence.device_id,
       set: { match_id: matchId, last_seen: sql`current_timestamp` },
@@ -1713,6 +1714,28 @@ async function countRealWatching(matchId: number) {
 
 async function countWatching(matchId: number) {
   return await countRealWatching(matchId) + syntheticAudience();
+}
+
+// What the host asked to see: who arrived, who actually said something, and who took one of the
+// unlock links. The click-through counts come off viewer_perks, because a rung is only granted when
+// the viewer opens that link — the tier IS the click.
+async function audienceBoard(matchId: number) {
+  const one = async (query: Promise<Array<{ n: number }>>) => Number((await query)[0]?.n ?? 0);
+  const [visitors, visitorsToday, spoke, spokeToday, messages, followedX, followedJp, registered] = await Promise.all([
+    one(db.select({ n: sql<number>`count(*)` }).from(viewerPresence)),
+    one(db.select({ n: sql<number>`count(*)` }).from(viewerPresence)
+      .where(sql`${viewerPresence.first_seen} >= date('now')`)),
+    one(db.select({ n: sql<number>`count(distinct ${chatMessages.device_id})` }).from(chatMessages)
+      .where(and(eq(chatMessages.match_id, matchId), sql`${chatMessages.device_id} != '' and ${chatMessages.device_id} not like 'seed:%'`))),
+    one(db.select({ n: sql<number>`count(distinct ${chatMessages.device_id})` }).from(chatMessages)
+      .where(and(eq(chatMessages.match_id, matchId), sql`${chatMessages.device_id} != '' and ${chatMessages.device_id} not like 'seed:%' and ${chatMessages.created_at} >= date('now')`))),
+    one(db.select({ n: sql<number>`count(*)` }).from(chatMessages)
+      .where(and(eq(chatMessages.match_id, matchId), sql`${chatMessages.device_id} != '' and ${chatMessages.device_id} not like 'seed:%'`))),
+    one(db.select({ n: sql<number>`count(*)` }).from(viewerPerks).where(sql`${viewerPerks.tier} >= 1`)),
+    one(db.select({ n: sql<number>`count(*)` }).from(viewerPerks).where(sql`${viewerPerks.tier} >= 2`)),
+    one(db.select({ n: sql<number>`count(*)` }).from(viewerPerks).where(sql`${viewerPerks.tier} >= 3`)),
+  ]);
+  return { visitors, visitorsToday, spoke, spokeToday, messages, followedX, followedJp, registered };
 }
 
 const CHAT_MAX_CHARS = 140;
@@ -2262,6 +2285,7 @@ const app = new Hono()
         return { synthetic, windowSeconds: VIEWER_PRESENCE_WINDOW_SECONDS };
       })(),
       realViewers: await countRealWatching(match.id),
+      board: await audienceBoard(match.id),
       running: inFlight.length,
       houseUsed: Number(houseTally?.n ?? 0),
       houseLimit: HOUSE_CAST_MAX_CLIPS,

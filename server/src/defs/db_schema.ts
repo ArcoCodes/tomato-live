@@ -169,6 +169,8 @@ export const viewerPresence = sqliteTable("viewer_presence", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   match_id: integer("match_id").notNull().references(() => matches.id),
   device_id: text("device_id").notNull(),
+  // last_seen is overwritten on every heartbeat, so it cannot answer "how many arrived today".
+  first_seen: text("first_seen"),
   last_seen: text("last_seen").notNull().default(sql`(current_timestamp)`),
 }, (table) => [
   uniqueIndex("viewer_presence_device_unique").on(table.device_id),

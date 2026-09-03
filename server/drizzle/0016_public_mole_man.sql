@@ -1,0 +1,1 @@
+ALTER TABLE `viewer_presence` ADD `first_seen` text;

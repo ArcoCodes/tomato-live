@@ -43,6 +43,11 @@ interface TierState {
   chatSeed: { current: string; tiers: SeedTier[] };
   realViewers: number;
   audience: { synthetic: number; windowSeconds: number };
+  board: {
+    visitors: number; visitorsToday: number;
+    spoke: number; spokeToday: number; messages: number;
+    followedX: number; followedJp: number; registered: number;
+  };
   running: number;
   houseUsed: number;
   houseLimit: number;
@@ -196,6 +201,43 @@ export function AdminChange() {
               </button>
             ))}
           </div>
+
+          {state.board ? (
+            <section className="admin-board">
+              <h2>Audience</h2>
+              <div className="admin-board-grid">
+                <div>
+                  <span>VISITED</span>
+                  <strong>{state.board.visitors.toLocaleString()}</strong>
+                  <small>{state.board.visitorsToday} today · unique browsers</small>
+                </div>
+                <div>
+                  <span>SPOKE</span>
+                  <strong>{state.board.spoke.toLocaleString()}</strong>
+                  <small>
+                    {state.board.spokeToday} today · {state.board.messages} messages
+                    {state.board.visitors ? ` · ${Math.round(state.board.spoke / state.board.visitors * 100)}% of visitors` : ""}
+                  </small>
+                </div>
+                {/* A rung is only granted when the viewer opens that link, so the tier is the click. */}
+                <div>
+                  <span>FOLLOWED ON X</span>
+                  <strong>{state.board.followedX.toLocaleString()}</strong>
+                  <small>opened @renoiseai</small>
+                </div>
+                <div>
+                  <span>FOLLOWED JP</span>
+                  <strong>{state.board.followedJp.toLocaleString()}</strong>
+                  <small>opened @renoiseaijp</small>
+                </div>
+                <div>
+                  <span>WENT TO RENOISE</span>
+                  <strong>{state.board.registered.toLocaleString()}</strong>
+                  <small>opened renoise.ai</small>
+                </div>
+              </div>
+            </section>
+          ) : null}
 
           {state.chatSeed ? (
             <>
