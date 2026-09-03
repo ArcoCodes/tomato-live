@@ -1,34 +1,41 @@
 import { useEffect, useRef } from "react";
 import { client } from "@/lib/edgespark";
 
+export interface TailFrameTarget {
+  id: number;
+  /** Where the clip plays from: the public bucket address, or the same-origin proxy as fallback. */
+  src: string;
+}
+
 /**
  * MiniMax H3-Max can only be handed one opening image, so every channel continues by starting from
  * its own previous clip's last frame. EdgeSpark has no scheduler and cannot decode video, so the
- * frame is captured here: the clip is already served same-origin from /api/public/clips/:id/video,
- * which means the canvas stays untainted and `toBlob` works.
+ * frame is captured here. The clip is loaded with crossOrigin="anonymous": the public bucket answers
+ * with CORS headers and the same-origin proxy needs none, so either way the canvas stays untainted
+ * and `toBlob` works.
  *
  * Runs off to the side of playback — it never touches the visible player.
  */
-export function useTailFrameHarvester(wanted: number[], onCaptured: () => void) {
+export function useTailFrameHarvester(wanted: TailFrameTarget[], onCaptured: () => void) {
   const doneRef = useRef(new Set<number>());
   const busyRef = useRef(false);
   const onCapturedRef = useRef(onCaptured);
   onCapturedRef.current = onCaptured;
 
   useEffect(() => {
-    const pending = wanted.filter((id) => !doneRef.current.has(id));
+    const pending = wanted.filter((item) => !doneRef.current.has(item.id));
     if (pending.length === 0 || busyRef.current) return;
 
     let cancelled = false;
     busyRef.current = true;
 
-    async function captureOne(id: number) {
+    async function captureOne({ id, src }: TailFrameTarget) {
       const video = document.createElement("video");
       video.muted = true;
       video.playsInline = true;
       video.preload = "auto";
       video.crossOrigin = "anonymous";
-      video.src = `/api/public/clips/${id}/video`;
+      video.src = src;
       try {
         await new Promise<void>((resolve, reject) => {
           const fail = () => reject(new Error(`clip ${id} failed to load`));
@@ -67,12 +74,12 @@ export function useTailFrameHarvester(wanted: number[], onCaptured: () => void) 
 
     void (async () => {
       let captured = false;
-      for (const id of pending) {
+      for (const target of pending) {
         if (cancelled) break;
         // Mark first: a clip that cannot be captured must not be retried on every poll.
-        doneRef.current.add(id);
+        doneRef.current.add(target.id);
         try {
-          if (await captureOne(id)) captured = true;
+          if (await captureOne(target)) captured = true;
         } catch {
           // A single unreadable clip must not stall the rest of the queue.
         }
