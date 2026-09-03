@@ -13,6 +13,8 @@ An EdgeSpark-hosted live AI survival show prototype. Viewers upload their own po
 7. The server composes the selected generated character designs into one scene keyframe, then sends that keyframe to MiniMax H3 Max as its opening frame.
 8. The director endpoint polls the same task IDs, copies the finished clip into EdgeSpark Storage, and adds it to the public broadcast queue.
 
+Finished clips and tail frames live in the public `broadcast-clips` bucket behind `https://video.renoise.live`, and the live feed hands the browser those addresses directly, so video bytes never pass through the Worker. The bucket's CORS policy is what lets the browser capture tail frames cross-origin. Set `PUBLIC_MEDIA_BASE_URL` to `off` in `server/.env.local` to fall back to the same-origin `/api/public/clips/:id/*` proxy when developing against local storage.
+
 Public character generation is limited to three attempts per network per hour. A browser-stored draft token lets a viewer close the dialog and safely resume polling without creating or charging for a duplicate task.
 
 Renoise model durations, resolutions, ratios, and material roles are discovered from the live `/models` response at runtime. The server does not rely on a copied capability table.

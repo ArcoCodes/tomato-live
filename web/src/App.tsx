@@ -7,7 +7,7 @@ import { ChatRoom } from "@/components/ChatRoom";
 import { LoginDialog } from "@/components/LoginDialog";
 import { ViewerCount } from "@/components/ViewerCount";
 import { useAuth } from "@/hooks/useAuth";
-import { useTailFrameHarvester } from "@/hooks/useTailFrameHarvester";
+import { useTailFrameHarvester, type TailFrameTarget } from "@/hooks/useTailFrameHarvester";
 import { deviceHeaders } from "@/lib/device";
 import { client } from "@/lib/edgespark";
 import type { BroadcastClip, LinkOffer, LiveData, PlayerControl } from "@/types/live";
@@ -257,8 +257,16 @@ function App() {
   }, [pendingIds, refresh]);
 
   const tailFrameKey = (live?.tail_frame_wanted ?? []).join(",");
-  const tailFrameWanted = useMemo(
-    () => (tailFrameKey ? tailFrameKey.split(",").map(Number) : []),
+  const clipsForTailFrames = live?.clips;
+  const tailFrameWanted = useMemo<TailFrameTarget[]>(
+    () => (tailFrameKey ? tailFrameKey.split(",").map(Number) : []).map((id) => ({
+      id,
+      // The clip's own address (public bucket when available); the proxy covers a clip the list lacks.
+      src: clipsForTailFrames?.find((clip) => clip.id === id)?.result_url ?? `/api/public/clips/${id}/video`,
+    })),
+    // Keyed on the id list on purpose: the clip addresses are stable, and re-running on every
+    // heartbeat would restart captures that are already in flight.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [tailFrameKey],
   );
   const onTailFrameCaptured = useCallback(() => void refresh(true), [refresh]);
