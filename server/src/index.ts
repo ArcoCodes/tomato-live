@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { db, secret, storage, vars } from "edgespark";
 import { auth } from "edgespark/http";
@@ -784,6 +784,23 @@ async function latestChannelClip(matchId: number, channel: "director" | "partici
   return clip ?? null;
 }
 
+// A tail frame the video model refuses is a dead end with no way out: the channel always reopens on
+// its last completed clip, so the same rejected frame goes back every time and nothing new ever
+// completes to replace it. One contestant sat on a frame of bloodied hands for six hours and 81
+// straight failures. After this many refusals the channel gives up on the frame and re-establishes
+// from the character sheet instead.
+const TAIL_FRAME_GIVE_UP = 3;
+
+async function failuresSince(matchId: number, participantId: number, clipId: number) {
+  const [row] = await db.select({ n: sql<number>`count(*)` }).from(generations)
+    .where(and(
+      channelFilter(matchId, "participant", participantId),
+      eq(generations.stage, "failed"),
+      gt(generations.id, clipId),
+    ));
+  return Number(row?.n ?? 0);
+}
+
 async function activeGenerations(matchId: number) {
   return db.select().from(generations)
     .where(and(eq(generations.match_id, matchId), inArray(generations.stage, ["queued", "keyframe", "video"])))
@@ -1236,9 +1253,15 @@ async function openingFrameFor(request: GenerationRequest, selected: Array<typeo
   }
   if (request.channel === "participant" && request.channelParticipantId != null) {
     const previous = await latestChannelClip(matchId, "participant", request.channelParticipantId);
-    if (previous?.thumbnail_url) {
+    // Everything queued after that clip failed, so the frame it left behind is the one thing every
+    // attempt had in common. Stop feeding it back.
+    const refusals = previous ? await failuresSince(matchId, request.channelParticipantId, previous.id) : 0;
+    if (previous?.thumbnail_url && refusals < TAIL_FRAME_GIVE_UP) {
       const url = await clipUrl(previous.thumbnail_url);
       if (url) return { url, s3Uri: previous.thumbnail_url, source: "channel_tail_frame" as const };
+    }
+    if (refusals >= TAIL_FRAME_GIVE_UP) {
+      console.log(`[frame] contestant ${request.channelParticipantId} reopening on its sheet after ${refusals} refusals`);
     }
   }
   const anchor = selected.find((item) => item.id === request.channelParticipantId) ?? selected[0];
@@ -1283,36 +1306,66 @@ async function queueLiveGeneration(request: GenerationRequest, createdBy: string
     throw error;
   }
 
-  const active = await activeGenerations(match.id);
-  const slotError = generationSlotError(active, request.channel, request.channelParticipantId, tierOf(match));
+  const tier = tierOf(match);
+  // Advisory only — it exists to give an API caller a precise error, not to hold the limit. The
+  // statement below is what actually holds it.
+  const slotError = generationSlotError(
+    await activeGenerations(match.id), request.channel, request.channelParticipantId, tier);
   if (slotError) {
     const error = new Error(slotError.error);
     error.name = slotError.status === 409 ? "ConflictError" : "RateLimitError";
     throw Object.assign(error, { generation: slotError.generation });
   }
 
-  const [generation] = await db.insert(generations).values({
-    match_id: match.id,
-    round: match.current_round,
-    stage: "queued",
-    model: LIVE_VIDEO_MODEL,
-    channel: request.channel,
-    channel_participant_id: request.channelParticipantId,
-    viewer_prompt: cleanText(request.viewerPrompt, VIEWER_PROMPT_MAX_CHARS) || null,
-    source_generation_id: request.sourceGenerationId ?? null,
-    prompt: JSON.stringify({
-      promptVersion: LIVE_PROMPT_VERSION,
-      awaitingPrompt: true,
-      // The director dialog supplies its own prompts; keep them so startQueuedGeneration
-      // does not overwrite them with the template.
-      ...(cleanText(request.keyframePrompt, 3500) ? { keyframePrompt: cleanText(request.keyframePrompt, 3500) } : {}),
-      ...(cleanText(request.videoPrompt, 3500) ? { videoPrompt: cleanText(request.videoPrompt, 3500) } : {}),
-      ...(cleanText(request.visualMemory, 1000) ? { visualMemory: cleanText(request.visualMemory, 1000) } : {}),
-    }),
-    participant_ids: JSON.stringify(participantIds),
-    duration_seconds: clamp(request.duration || LIVE_VIDEO_DURATION_SECONDS, LIVE_VIDEO_DURATION_SECONDS, 15),
-    created_by: createdBy,
-  }).returning();
+  const queuedPrompt = JSON.stringify({
+    promptVersion: LIVE_PROMPT_VERSION,
+    awaitingPrompt: true,
+    // The director dialog supplies its own prompts; keep them so startQueuedGeneration
+    // does not overwrite them with the template.
+    ...(cleanText(request.keyframePrompt, 3500) ? { keyframePrompt: cleanText(request.keyframePrompt, 3500) } : {}),
+    ...(cleanText(request.videoPrompt, 3500) ? { videoPrompt: cleanText(request.videoPrompt, 3500) } : {}),
+    ...(cleanText(request.visualMemory, 1000) ? { visualMemory: cleanText(request.visualMemory, 1000) } : {}),
+  });
+
+  // Every watching browser ticks the house cast and the director, so reading the slot counts and
+  // then inserting let a dozen heartbeats all see the same free slot and all take it. That is how
+  // one contestant channel ended up with three clips in flight in the same second, and how the
+  // house line ate the headroom the director needs. Re-checking inside the INSERT is what actually
+  // serialises a channel: the losers write nothing.
+  const busy = sql`match_id = ${match.id} and stage in ('queued','keyframe','video')`;
+  const channelGuard = request.channel === "director"
+    ? sql`(select count(*) from generations where ${busy} and channel = 'director') < ${tier.directorSlots}`
+    // A contestant channel is single-file whatever the tier says: its clips chain tail frame to tail
+    // frame, and two at once fork the chain.
+    : sql`not exists (select 1 from generations where ${busy} and channel = 'participant' and channel_participant_id = ${request.channelParticipantId})`;
+  // The house ceiling is what leaves the director room it cannot be crowded out of.
+  const houseGuard = createdBy.startsWith("house:")
+    ? sql` and (select count(*) from generations where ${busy} and created_by like 'house:%') < ${tier.houseSlots}`
+    : sql``;
+
+  const inserted = await db.all<{ id: number }>(sql`
+    insert into generations (
+      match_id, round, stage, model, channel, channel_participant_id,
+      viewer_prompt, source_generation_id, prompt, participant_ids, duration_seconds, created_by
+    )
+    select ${match.id}, ${match.current_round}, 'queued', ${LIVE_VIDEO_MODEL}, ${request.channel},
+      ${request.channelParticipantId}, ${cleanText(request.viewerPrompt, VIEWER_PROMPT_MAX_CHARS) || null},
+      ${request.sourceGenerationId ?? null}, ${queuedPrompt}, ${JSON.stringify(participantIds)},
+      ${clamp(request.duration || LIVE_VIDEO_DURATION_SECONDS, LIVE_VIDEO_DURATION_SECONDS, 15)}, ${createdBy}
+    where (select count(*) from generations where ${busy}) < ${tier.concurrent}
+      and ${channelGuard}${houseGuard}
+    returning id
+  `);
+  if (!inserted.length) {
+    const lost = generationSlotError(
+      await activeGenerations(match.id), request.channel, request.channelParticipantId, tier)
+      ?? { status: 429 as const, error: "Too many clips rendering at once — try again shortly", generation: null };
+    const error = new Error(lost.error);
+    error.name = lost.status === 409 ? "ConflictError" : "RateLimitError";
+    throw Object.assign(error, { generation: lost.generation });
+  }
+  const [generation] = await db.select().from(generations)
+    .where(eq(generations.id, inserted[0].id)).limit(1);
   return generation;
 }
 
@@ -1598,13 +1651,17 @@ async function summarizeClip(generation: typeof generations.$inferSelect) {
 
 // Round-robin across contestant channels: whoever has fresh footage and has waited longest since the
 // director last cut to them goes next.
-async function pickDirectorSource(matchId: number) {
+async function pickDirectorSource(match: typeof matches.$inferSelect) {
+  const matchId = match.id;
   const clips = await db.select().from(generations)
     .where(and(
       eq(generations.match_id, matchId),
       eq(generations.channel, "participant"),
       eq(generations.stage, "completed"),
       isNotNull(generations.thumbnail_url),
+      // A cut opens on this clip's tail frame, so footage from before the last relocation would put
+      // the broadcast back in a place the story has left. Better to wait a beat than to cut there.
+      gte(generations.id, match.story_reframe_after),
     ))
     .orderBy(desc(generations.id));
   const newestByParticipant = new Map<number, typeof generations.$inferSelect>();
@@ -2321,7 +2378,7 @@ async function maybeStartDirectorClip(match: typeof matches.$inferSelect) {
     const active = await activeGenerations(matchId);
     if (generationSlotError(active, "director", null, tier)) return null;
     if (tier.gapCoversDirector && await autoQueuedWithin(matchId, tier.gapSeconds, false) > 0) return null;
-    const source = await pickDirectorSource(matchId);
+    const source = await pickDirectorSource(match);
     if (!source?.channel_participant_id || !source.thumbnail_url) return null;
     const [participant] = await db.select({ id: participants.id }).from(participants)
       .where(eq(participants.id, source.channel_participant_id)).limit(1);
@@ -2600,7 +2657,12 @@ const app = new Hono()
     // There is no scheduler here, so the house cast advances on the back of the viewer heartbeat.
     await maybeSeedChat(match);
     const turned = await advanceStory(match);
-    await maybeAdvanceHouseCast(turned ? (await ensureLiveMatch()) : match);
+    const current = turned ? await ensureLiveMatch() : match;
+    // The director line is normally chained off a tail frame landing. If every slot happened to be
+    // busy at that exact moment the cut was simply lost, with nothing to retry it — which is how it
+    // went an hour without filming. Giving it first refusal on each tick is that retry.
+    await maybeStartDirectorClip(current);
+    await maybeAdvanceHouseCast(current);
     const [roster, allEvents, clips, pendingGenerations] = await Promise.all([
       db.select().from(participants)
         .where(and(
