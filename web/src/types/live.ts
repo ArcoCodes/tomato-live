@@ -142,6 +142,8 @@ export interface ChatMessage {
   mentions: number[];
   filmed: boolean;
   generation_id: number | null;
+  /** What became of the clip this line asked for: null, "completed", "failed", or a stage in flight. */
+  generation_stage: string | null;
   created_at: string;
 }
 

@@ -170,10 +170,15 @@ export function ChatRoom({ messages, participants, waiting, allowance, onShowCli
             <div className={message.filmed ? "chat-line is-filmed" : "chat-line"} key={message.id}>
               <span className="chat-who">{message.display_name}</span>
               <p>{renderBody(message.body, byName)}</p>
+              {/* A failed render used to be offered as "Watch it", and the player answered that the
+                  clip was not in the queue yet — which reads as "wait" for something that is never
+                  coming. Say what happened instead. */}
               {message.filmed ? (
-                message.generation_id != null
+                message.generation_stage === "failed"
+                  ? <em className="is-lost">COULD NOT BE FILMED</em>
+                  : message.generation_id != null && message.generation_stage === "completed"
                   ? <button type="button" className="chat-jump" onClick={() => onShowClip(message.generation_id!)}>Watch it <span>→</span></button>
-                  : <em>FILMED</em>
+                  : <em>FILMING…</em>
               ) : null}
             </div>
           ))}

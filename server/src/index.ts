@@ -894,7 +894,7 @@ async function reapStalledGenerations(matchId: number) {
     ))
     .returning({ id: generations.id });
   // Whatever a viewer asked for in those clips goes back in the queue rather than dying with them.
-  for (const row of reaped) await requeueFailedCue(row.id);
+  for (const row of reaped) await requeueFailedCue(row.id, "never came back");
   if (reaped.length) console.log(`[reaper] freed ${reaped.length} wedged clip(s)`);
   return reaped.length;
 }
@@ -1768,6 +1768,49 @@ const DIRECTOR_SOURCE_WINDOW = 150;
 // Exactly what the live payload reads back out. Selecting whole rows dragged the prompt column with
 // every clip — several kilobytes each, sixty of them, on every heartbeat from every browser — and
 // none of it is ever sent to anyone.
+// How much archive a viewer pulls in one go. Small enough that a page lands quickly on a phone,
+// and each page is ten more thumbnails to decode.
+const ARCHIVE_PAGE_SIZE = 10;
+const ARCHIVE_PAGE_MAX = 20;
+
+// One clip as the browser sees it. Shared by the live payload and the archive pages so the two
+// cannot describe the same clip differently.
+function clipPayload(clip: {
+  id: number;
+  round: number;
+  duration_seconds: number;
+  channel: "director" | "participant";
+  channel_participant_id: number | null;
+  participant_ids: string;
+  source_generation_id: number | null;
+  summary: string | null;
+  result_url: string | null;
+  thumbnail_url: string | null;
+  created_at: string;
+}) {
+  return {
+    id: clip.id,
+    round: clip.round,
+    duration_seconds: clip.duration_seconds,
+    channel: clip.channel,
+    channel_participant_id: clip.channel_participant_id,
+    participant_ids: parseParticipantIds(clip.participant_ids),
+    source_generation_id: clip.source_generation_id,
+    summary: clip.summary,
+    // One stable address per clip. A presigned URL changes on every poll, and a changed <video> src
+    // makes the browser drop the decoded picture and reload — the player would black out and restart.
+    // The public bucket address is preferred; the same-origin proxy is the fallback.
+    result_url: clip.result_url
+      ? publicMediaUrl(clip.result_url) ?? `/api/public/clips/${clip.id}/video`
+      : null,
+    thumbnail_url: clip.thumbnail_url
+      ? publicMediaUrl(clip.thumbnail_url) ?? `/api/public/clips/${clip.id}/thumbnail`
+      : null,
+    has_tail_frame: Boolean(clip.thumbnail_url),
+    created_at: clip.created_at,
+  };
+}
+
 const CLIP_PAYLOAD_COLUMNS = {
   id: generations.id,
   round: generations.round,
@@ -2136,7 +2179,7 @@ function chatHandle(email: string) {
   return name.length > 14 ? `${name.slice(0, 14)}…` : name;
 }
 
-function chatPayload(row: typeof chatMessages.$inferSelect) {
+function chatPayload(row: typeof chatMessages.$inferSelect, stage: string | null = null) {
   return {
     id: row.id,
     display_name: row.display_name,
@@ -2144,6 +2187,10 @@ function chatPayload(row: typeof chatMessages.$inferSelect) {
     mentions: parseParticipantIds(row.mentions),
     filmed: Boolean(row.consumed_at),
     generation_id: row.generation_id,
+    // What became of the clip this line asked for. Without it the room offered "Watch it" on a
+    // render that had failed, and the player answered that the clip was not in the queue yet —
+    // which read as "wait a moment" for something that was never going to arrive.
+    generation_stage: stage,
     created_at: row.created_at,
   };
 }
@@ -2166,13 +2213,28 @@ const CHAT_PRIORITY_HOST = 2;
 // would otherwise retry until it had spent real money on nothing.
 const CHAT_CUE_MAX_ATTEMPTS = 3;
 
-async function requeueFailedCue(generationId: number) {
+// Our failure or the line's? The attempt cap exists to stop a line the model will always refuse
+// from spending money forever — it was never meant to punish a viewer for our outage. A revoked
+// key retired three viewers' messages in a couple of minutes, each of which the model never saw.
+function isOurFault(message: string) {
+  return /credential|revoked|unauthor|forbidden|not configured|FAL_KEY|rate limit|too many|overload|timeout|internal error|never came back|5\d\d/i
+    .test(message);
+}
+
+async function requeueFailedCue(generationId: number, failure = "") {
+  const spendsAttempt = !isOurFault(failure);
   await db.update(chatMessages)
-    .set({ consumed_at: null, generation_id: null })
+    .set({
+      consumed_at: null,
+      generation_id: null,
+      // An outage costs the line nothing: it goes back exactly as it arrived.
+      ...(spendsAttempt ? {} : { attempts: sql`max(0, attempts - 1)` }),
+    })
     .where(and(
       eq(chatMessages.generation_id, generationId),
       gte(chatMessages.priority, CHAT_PRIORITY_VIEWER),
-      lt(chatMessages.attempts, CHAT_CUE_MAX_ATTEMPTS),
+      // Only a line that has spent its own attempts is out; one held back by an outage never does.
+      lt(chatMessages.attempts, CHAT_CUE_MAX_ATTEMPTS + (spendsAttempt ? 0 : 1)),
     ))
     .catch(() => undefined);
 }
@@ -2911,7 +2973,7 @@ async function syncLiveGeneration(id: number) {
     const message = error instanceof Error ? error.message : "Sync failed";
     await db.update(generations).set({ stage: "failed", error_message: message }).where(eq(generations.id, generation.id));
     // The line that asked for this shot is not spent just because the render was.
-    await requeueFailedCue(generation.id);
+    await requeueFailedCue(generation.id, message);
     return { error: message, generation: { ...generation, stage: "failed" }, failed: true };
   }
 }
@@ -2972,9 +3034,17 @@ async function buildLiveShared(match: LiveMatchRow) {
     .orderBy(desc(chatMessages.id))
     .limit(40);
   const haveClipIds = new Set(clips.map((clip) => clip.id));
-  const missingClipIds = [...new Set(chat
+  const chatClipIds = [...new Set(chat
     .map((item) => item.generation_id)
-    .filter((id): id is number => id != null && !haveClipIds.has(id)))];
+    .filter((id): id is number => id != null))];
+  // Every clip the room points at, whatever became of it — a failed one is missing from `clips`,
+  // and that absence is exactly what the room needs told apart from "not filmed yet".
+  const chatClipStageRows = chatClipIds.length
+    ? await db.select({ id: generations.id, stage: generations.stage }).from(generations)
+      .where(inArray(generations.id, chatClipIds))
+    : [];
+  const chatClipStage = new Map(chatClipStageRows.map((row) => [row.id, row.stage as string]));
+  const missingClipIds = chatClipIds.filter((id) => !haveClipIds.has(id));
   const referencedClips = missingClipIds.length
     ? await db.select(CLIP_PAYLOAD_COLUMNS).from(generations).where(and(
       eq(generations.match_id, match.id),
@@ -2982,27 +3052,7 @@ async function buildLiveShared(match: LiveMatchRow) {
       inArray(generations.id, missingClipIds),
     ))
     : [];
-  const clipList = [...clips, ...referencedClips].map((clip) => ({
-    id: clip.id,
-    round: clip.round,
-    duration_seconds: clip.duration_seconds,
-    channel: clip.channel,
-    channel_participant_id: clip.channel_participant_id,
-    participant_ids: parseParticipantIds(clip.participant_ids),
-    source_generation_id: clip.source_generation_id,
-    summary: clip.summary,
-    // One stable address per clip. A presigned URL changes on every poll, and a changed <video> src
-    // makes the browser drop the decoded picture and reload — the player would black out and restart.
-    // The public bucket address is preferred; the same-origin proxy is the fallback.
-    result_url: clip.result_url
-      ? publicMediaUrl(clip.result_url) ?? `/api/public/clips/${clip.id}/video`
-      : null,
-    thumbnail_url: clip.thumbnail_url
-      ? publicMediaUrl(clip.thumbnail_url) ?? `/api/public/clips/${clip.id}/thumbnail`
-      : null,
-    has_tail_frame: Boolean(clip.thumbnail_url),
-    created_at: clip.created_at,
-  }));
+  const clipList = [...clips, ...referencedClips].map(clipPayload);
   const pendingList = pendingGenerations.map((item) => ({
     id: item.id,
     stage: item.stage,
@@ -3015,7 +3065,10 @@ async function buildLiveShared(match: LiveMatchRow) {
     shared: {
       match: { ...match, viewers: await countWatching(match.id) },
       // Oldest first: the room reads top to bottom.
-      chat: chat.reverse().map(chatPayload),
+      chat: chat.reverse().map((row) => chatPayload(
+        row,
+        row.generation_id == null ? null : chatClipStage.get(row.generation_id) ?? null,
+      )),
       // What is actually queued to film, which is now people's lines only.
       chat_waiting: chat.filter((item) => !item.consumed_at && item.priority >= CHAT_PRIORITY_VIEWER).length,
       participants: rosterWithUrls,
@@ -3183,7 +3236,18 @@ const app = new Hono()
       .orderBy(desc(chatMessages.id))
       .limit(20);
 
-    const stageOf = new Map(inFlight.map((item) => [item.id, item.stage]));
+    // In-flight alone could not tell a clip that aired from one that failed — both are simply
+    // absent from it — so the host's board called every failure "aired". Read the real stage.
+    const claimedIds = claimed.map((row) => row.generation_id).filter((id): id is number => id != null);
+    const stageRows = claimedIds.length
+      ? await db.select({ id: generations.id, stage: generations.stage }).from(generations)
+        .where(inArray(generations.id, claimedIds))
+      : [];
+    const stageOf = new Map<number, string>([
+      ...inFlight.map((item) => [item.id, item.stage] as [number, string]),
+      ...stageRows.map((row) => [row.id, row.stage] as [number, string]),
+    ]);
+    const isInFlight = new Set(inFlight.map((item) => item.id));
     const line = (row: typeof chatMessages.$inferSelect) => ({
       id: row.id,
       display_name: row.display_name,
@@ -3225,8 +3289,17 @@ const app = new Hono()
       queue: {
         waiting: waiting.map(line),
         // A message is "filming" only while the clip it became is still rendering.
-        filming: claimed.filter((row) => row.generation_id != null && stageOf.has(row.generation_id)).map(line),
-        aired: claimed.filter((row) => row.generation_id == null || !stageOf.has(row.generation_id)).slice(0, 8).map(line),
+        filming: claimed.filter((row) => row.generation_id != null && isInFlight.has(row.generation_id)).map(line),
+        aired: claimed
+          .filter((row) => row.generation_id != null
+            && !isInFlight.has(row.generation_id)
+            && stageOf.get(row.generation_id) === "completed")
+          .slice(0, 8).map(line),
+        // Named separately because a line whose render failed is not a line that aired, and the
+        // board reading them as the same thing is how three lost messages looked like three wins.
+        failed: claimed
+          .filter((row) => row.generation_id != null && stageOf.get(row.generation_id) === "failed")
+          .slice(0, 8).map(line),
         // Everything else in flight is the show filming itself, with nobody's line behind it.
         selfDriven: inFlight.filter((item) => !claimed.some((row) => row.generation_id === item.id)).map((item) => ({
           id: item.id,
@@ -3359,6 +3432,46 @@ const app = new Hono()
     return c.json({ ...payload, generated_at: new Date().toISOString() }, 200, {
       ETag: etag,
       "Cache-Control": "private, no-cache",
+    });
+  })
+  // Older footage, a page at a time. The live payload carries only the recent window — it is polled
+  // every few seconds by every browser, so it cannot also be the archive — and this is how a viewer
+  // reaches back past it without making that payload heavier for everyone.
+  .get("/api/public/clips", async (c) => {
+    const match = await ensureLiveMatch();
+    const channel = cleanText(c.req.query("channel"), 40);
+    const before = Number(c.req.query("before"));
+    const limit = Math.min(Math.max(Number(c.req.query("limit")) || ARCHIVE_PAGE_SIZE, 1), ARCHIVE_PAGE_MAX);
+
+    // "director" or "p:<participantId>", matching the channel keys the player already uses.
+    const channelFilters = channel === "director"
+      ? [eq(generations.channel, "director" as const)]
+      : channel.startsWith("p:")
+      ? [
+        eq(generations.channel, "participant" as const),
+        eq(generations.channel_participant_id, Number(channel.slice(2))),
+      ]
+      : [];
+    if (channel && !channelFilters.length) return c.json({ error: "Unknown channel" }, 400);
+
+    const rows = await db.select(CLIP_PAYLOAD_COLUMNS).from(generations)
+      .where(and(
+        eq(generations.match_id, match.id),
+        eq(generations.stage, "completed"),
+        isNotNull(generations.result_url),
+        ...channelFilters,
+        // Ids only ever climb, so the newest id already seen is a stable cursor: nothing can be
+        // inserted behind it and shift the page boundaries under the reader.
+        Number.isInteger(before) && before > 0 ? lt(generations.id, before) : undefined,
+      ))
+      .orderBy(desc(generations.id))
+      // One extra row answers "is there more" without a second count query.
+      .limit(limit + 1);
+
+    const page = rows.slice(0, limit);
+    return c.json({
+      clips: page.map(clipPayload),
+      next_cursor: rows.length > limit && page.length ? page[page.length - 1].id : null,
     });
   })
   .get("/api/public/clips/:id/video", async (c) => {

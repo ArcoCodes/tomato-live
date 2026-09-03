@@ -158,6 +158,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .clip-nav.is-right { right: 2px; }
 .clip-history-track button { position: relative; flex: none; width: 152px; padding: 13px 0 0; border: 0; background: transparent; color: var(--muted); text-align: left; cursor: pointer; transition: color .16s ease; }
 .clip-history-track button:hover { color: var(--text); }
+
+/* Sits at the far right of the strip, where the oldest footage already is, so "further back" and
+   "further right" stay the same direction. */
+.clip-history-track button.clip-more { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; width: 96px; min-height: 92px; margin: 13px 0 0; padding: 0; border: 1px dashed var(--line-strong); border-radius: var(--r-md); background: var(--surface-2); color: var(--muted); }
+.clip-history-track button.clip-more:hover:not(:disabled) { border-color: var(--brand); border-style: solid; color: var(--brand); background: var(--brand-soft); }
+.clip-history-track button.clip-more:disabled { cursor: default; opacity: .8; }
+.clip-more b { font: 17px var(--display); font-weight: 400; letter-spacing: .02em; }
+.clip-more span { font: 8px var(--utility); letter-spacing: .1em; text-align: center; line-height: 1.4; }
+.clip-more-spinner { width: 15px; height: 15px; border: 2px solid var(--line-strong); border-top-color: var(--brand); border-radius: 50%; animation: spin .7s linear infinite; }
 .clip-history-track button:hover .clip-thumb { outline-color: var(--line-strong); }
 .clip-history-track button.active { color: var(--text); }
 .clip-history-track button.active .clip-thumb { outline-color: var(--brand); }
@@ -395,6 +404,8 @@ fieldset { border: 0; padding: 0; margin: 0 0 20px; }
 .chat-jump:hover { background: var(--brand); color: #fff; }
 .chat-jump span { margin-left: 4px; }
 .chat-line em { align-self: flex-start; margin-top: 5px; padding: 2px 9px; border-radius: var(--r-pill); background: var(--brand-soft); color: var(--brand-deep); font: 10px var(--utility); font-style: normal; font-weight: 600; letter-spacing: .08em; }
+/* A render that will never arrive reads as a fact, not as a badge worth celebrating. */
+.chat-line em.is-lost { background: transparent; color: var(--faint); padding-left: 0; }
 .chat-line.is-filmed p { color: var(--muted); }
 .chat-compose { position: relative; flex: none; padding: 12px 16px 16px; border-top: 1px solid var(--line); }
 .chat-field { display: flex; gap: 7px; }
@@ -488,6 +499,7 @@ fieldset { border: 0; padding: 0; margin: 0 0 20px; }
   .chat-jump { margin-top: 3px; padding: 2px 9px; font-size: 9px; background: rgb(255 255 255 / .16); color: #fff; backdrop-filter: blur(6px); }
   .chat-jump:hover { background: var(--brand); }
   .chat-line em { background: rgb(255 255 255 / .16); color: #fff; }
+  .chat-line em.is-lost { background: transparent; color: rgb(253 250 248 / .5); }
   .chat-empty { color: rgb(253 250 248 / .72); text-shadow: 0 1px 4px rgb(0 0 0 / .6); font-size: 12px; padding: 0 8px; }
 
   .chat-compose { pointer-events: auto; padding: 6px 12px calc(10px + env(safe-area-inset-bottom)); border-top: 0; background: linear-gradient(transparent, rgb(12 9 7 / .82) 40%); }

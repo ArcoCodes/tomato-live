@@ -14,6 +14,9 @@ import type { BroadcastClip, LinkOffer, LiveData, PlayerControl } from "@/types/
 
 const DIRECTOR_CHANNEL = "director";
 
+// Matches the server's page size. Ten thumbnails is a page that lands quickly on a phone.
+const ARCHIVE_PAGE = 10;
+
 // Same source and medium the unlock links already use, so Renoise sees one campaign; utm_content is
 // what separates this header button from those.
 const RENOISE_URL = "https://renoise.ai/?utm_medium=renoiselive&utm_source=tomato-renoise-live&utm_content=join-button";
@@ -328,6 +331,51 @@ function App() {
     [activeChannel, live?.clips],
   );
 
+  // The live payload carries a recent window only — it is polled every few seconds by everyone, so
+  // it cannot also be the archive. Older footage is pulled a page at a time and kept beside it,
+  // never merged into `clips`: the player reads that list, and prepending history to it would
+  // change what "the latest clip" means mid-playback.
+  const [archive, setArchive] = useState<{ clips: BroadcastClip[]; cursor: number | null; done: boolean }>(
+    { clips: [], cursor: null, done: false },
+  );
+  const [archiveLoading, setArchiveLoading] = useState(false);
+  // Each channel has its own history, so switching away discards what was loaded for the last one.
+  useEffect(() => {
+    setArchive({ clips: [], cursor: null, done: false });
+    setArchiveLoading(false);
+  }, [activeChannel]);
+
+  const loadOlderClips = useCallback(async () => {
+    if (archiveLoading || archive.done) return;
+    // Continue from the cursor, or from the oldest clip already on screen the first time.
+    const onScreenOldest = channelClips.length
+      ? Math.min(...channelClips.map((clip) => clip.id))
+      : null;
+    const before = archive.cursor ?? onScreenOldest;
+    setArchiveLoading(true);
+    try {
+      const params = new URLSearchParams({ channel: activeChannel, limit: String(ARCHIVE_PAGE) });
+      if (before != null) params.set("before", String(before));
+      const response = await fetch(`/api/public/clips?${params.toString()}`, { headers: deviceHeaders });
+      if (!response.ok) throw new Error("archive page failed");
+      const data = await response.json() as { clips: BroadcastClip[]; next_cursor: number | null };
+      setArchive((current) => {
+        // A page can overlap what is already held if the live window moved under us.
+        const seen = new Set(current.clips.map((clip) => clip.id));
+        const added = data.clips.filter((clip) => !seen.has(clip.id));
+        return {
+          clips: [...current.clips, ...added],
+          cursor: data.next_cursor,
+          done: data.next_cursor == null,
+        };
+      });
+    } catch {
+      // Leave the cursor alone so the same page can be asked for again.
+    } finally {
+      setArchiveLoading(false);
+    }
+  }, [activeChannel, archive.cursor, archive.done, archiveLoading, channelClips]);
+
   const myParticipant = useMemo(
     () => live?.participants.find((participant) => participant.id === control?.participantId),
     [control?.participantId, live?.participants],
@@ -465,6 +513,10 @@ function App() {
           jumpRequest={jumpRequest}
           onJumpHandled={() => setJumpRequest(null)}
           archiveOpen={archiveOpen}
+          olderClips={archive.clips}
+          moreOlder={!archive.done}
+          loadingOlder={archiveLoading}
+          onLoadOlder={loadOlderClips}
         />
         <ChatRoom
           messages={live.chat ?? []}

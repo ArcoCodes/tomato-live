@@ -29,6 +29,9 @@ function shortSrc(url: string) {
 
 // SQLite hands back "YYYY-MM-DD HH:MM:SS" in UTC, which Safari refuses to parse as-is. Normalising
 // it is what makes the clock read correctly in the viewer's own timezone.
+// Matches the page size the app asks for, so the button promises what it delivers.
+const ARCHIVE_PAGE_HINT = 10;
+
 function clipClock(createdAt: string) {
   const parsed = new Date(`${createdAt.replace(" ", "T")}${/[Zz]|[+-]\d\d:?\d\d$/.test(createdAt) ? "" : "Z"}`);
   if (Number.isNaN(parsed.getTime())) return "";
@@ -60,7 +63,7 @@ export interface ChannelTab {
   isMark?: boolean;
 }
 
-export function Broadcast({ clips, participants, channels, activeChannel, onSelectChannel, jumpRequest, onJumpHandled, archiveOpen }: {
+export function Broadcast({ clips, participants, channels, activeChannel, onSelectChannel, jumpRequest, onJumpHandled, archiveOpen, olderClips = [], moreOlder = false, loadingOlder = false, onLoadOlder }: {
   clips: BroadcastClip[];
   /** Needed to show whose clip each archive card is, by character sheet rather than by name. */
   participants: Participant[];
@@ -72,6 +75,11 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
   onJumpHandled?: () => void;
   /** Phone only: the archive is off screen until the viewer asks for it. */
   archiveOpen?: boolean;
+  /** Pages of older footage. Kept out of `clips` so the player's idea of "latest" cannot shift. */
+  olderClips?: BroadcastClip[];
+  moreOlder?: boolean;
+  loadingOlder?: boolean;
+  onLoadOlder?: () => void;
 }) {
   const playable = useMemo(
     () => clips
@@ -112,7 +120,12 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
   const standbySlot = activeSlot === 0 ? 1 : 0;
   const standbyReadyKey = standbyClip ? `${standbySlot}:${standbyClip.id}` : "";
   const latestClipId = playable[playable.length - 1]?.id ?? null;
-  const history = [...playable].reverse();
+  const onScreenIds = new Set(playable.map((item) => item.id));
+  const history = [
+    ...[...playable].reverse(),
+    // A page can overlap the live window if it moved while the request was in flight.
+    ...olderClips.filter((item) => !onScreenIds.has(item.id)),
+  ];
 
   // Owner first so their sheet sits on top of the fan; guests peek out behind it.
   function castOf(clip: BroadcastClip) {
@@ -558,7 +571,7 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
           </button>
         ) : null}
         <div className="clip-history-track" ref={archiveRef}>
-          {history.length ? history.map((item, index) => (
+          {history.length ? history.map((item) => (
             <button
               key={item.id}
               className={item.id === (queuedClipId ?? currentClipId) ? "active" : ""}
@@ -592,12 +605,26 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
                 {item.id === latestClipId ? <em>NEW</em> : null}
               </span>
               <span className="clip-meta">
-                {/* Position within this channel, not the database id — ids never restart. */}
-                <strong>SHOT {String(history.length - index).padStart(3, "0")}</strong>
+                {/* When it aired, not a position. A sequence number counted from what is loaded, and
+                    every label on screen jumped by ten each time a page of history arrived. */}
+                <strong>{clipClock(item.created_at)}</strong>
                 <small>{item.duration_seconds}s</small>
               </span>
             </button>
           )) : <p>Once the first clip is filmed, the archive shows up here.</p>}
+          {history.length && (moreOlder || loadingOlder) ? (
+            <button
+              type="button"
+              className="clip-more"
+              onClick={() => onLoadOlder?.()}
+              disabled={loadingOlder}
+              aria-label="Load earlier clips"
+            >
+              {loadingOlder
+                ? <><i className="clip-more-spinner" /><span>Loading…</span></>
+                : <><b>+{ARCHIVE_PAGE_HINT}</b><span>Earlier clips</span></>}
+            </button>
+          ) : null}
         </div>
       </div>
     </section>
