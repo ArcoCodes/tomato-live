@@ -280,7 +280,8 @@ function App() {
   const channels = useMemo<ChannelTab[]>(() => {
     if (!live) return [];
     const pending = live.pending_generations ?? [];
-    const directorCount = live.clips.filter((clip) => clip.channel === "director").length;
+    // The real total, not what happens to be in the recent window the heartbeat carries.
+    const directorCount = live.clip_counts?.director ?? 0;
     const tabs: ChannelTab[] = [{
       key: DIRECTOR_CHANNEL,
       label: "Director",
@@ -291,7 +292,7 @@ function App() {
       isMark: true,
     }];
     for (const participant of live.participants) {
-      const count = live.clips.filter((clip) => clip.channel_participant_id === participant.id).length;
+      const count = live.clip_counts?.participants?.[String(participant.id)] ?? 0;
       tabs.push({
         key: `p:${participant.id}`,
         label: participant.display_name,

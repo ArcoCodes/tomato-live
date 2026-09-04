@@ -30,8 +30,8 @@ const LIVE_PROMPT_VERSION = "channel-v3";
 const CONTINUABLE_PROMPT_VERSIONS = new Set(["textless-v2", LIVE_PROMPT_VERSION]);
 const VIEWER_PROMPT_MAX_CHARS = 300;
 const TAIL_FRAME_MAX_BYTES = 4 * 1024 * 1024;
-const FIELD_AUDIO_PROMPT = "Audio: on-location sound only — wind, rain hitting fabric and rock, footsteps in mud, the contestant's breathing and effort. No music, no narration, no voice-over.";
-const DIRECTOR_AUDIO_PROMPT = "Audio: a calm English-speaking off-screen commentator narrates the situation in one or two short sentences, mixed over storm ambience. Broadcast commentary tone, spoken in English, no music, no other language.";
+const FIELD_AUDIO_PROMPT = "Audio: on-location sound only — whatever this place and this weather actually sound like, plus the contestant's breathing and effort. No music, no narration, no voice-over.";
+const DIRECTOR_AUDIO_PROMPT = "Audio: a calm English-speaking off-screen commentator narrates the situation in one or two short sentences, mixed over the ambience of wherever this is. Broadcast commentary tone, spoken in English, no music, no other language.";
 const PACING_PROMPT = [
   "Pacing: one continuous take, but never a static one.",
   `Break the ${LIVE_VIDEO_DURATION_SECONDS} seconds into three escalating beats — a new physical action or a new complication roughly every ${Math.round(LIVE_VIDEO_DURATION_SECONDS / 3)} seconds. Never hold one pose or one framing for the whole clip.`,
@@ -1086,7 +1086,7 @@ async function promptsForViewerInput({
 // timeline rather than on any single viewer's instruction.
 // The opening frame is the END of a contestant's shot. Without saying so, the model just replays
 // the beat that already aired — the cutaway has to be told that time moves on.
-async function expandDirectorCut(sourceStory: string, timeline: string[], lead: string, condition: string, story: StoryState) {
+async function expandDirectorCut(sourceStory: string, timeline: string[], lead: string, condition: string) {
   const beatSeconds = Math.round(LIVE_VIDEO_DURATION_SECONDS / 3);
   try {
     const shot = await miniMaxChat(
@@ -1097,7 +1097,7 @@ async function expandDirectorCut(sourceStory: string, timeline: string[], lead: 
         "Rules:",
         "- Do NOT repeat, re-stage or continue the action that just ended. Time moves forward from it.",
         "- Open on that frame and immediately pull back into a wide establishing broadcast shot, then keep the camera drifting — crane up, arc around, settle on the widest view.",
-        "- Show the wider situation instead of the contestant's hands: the terrain, the weather closing in, distance still to cover, what is about to become a problem.",
+        "- Show the wider situation instead of the contestant's hands: the terrain, what the weather is doing, distance still to cover, what is about to become a problem.",
         `- Three escalating beats of about ${beatSeconds} seconds each, written as "0-${beatSeconds}s: ...".`,
         "- Keep the location, weather, wardrobe and colour grade continuous with the opening frame.",
         "- This is the show's wide view, so use it: reveal how far the situation has moved on, what the place has become, and what is closing in next.",
@@ -1107,9 +1107,11 @@ async function expandDirectorCut(sourceStory: string, timeline: string[], lead: 
         "Output only the prompt itself, no preamble.",
       ].join("\n"),
       [
-        sourceStory ? `The frame we open on is the end of: ${sourceStory}` : `The frame we open on is a contestant at ${story.setting}.`,
-        `Where the show is now: ${story.setting}, ${story.clock}.`,
-        `Chapter: ${story.phase}. What they are trying to do: ${story.goal}. Tension: ${story.tension}/100.`,
+        // Described from the frame, not from the story state. A cutaway opens on a contestant's
+        // final frame — the place actually on screen — and the story is often ahead of the pictures,
+        // so naming its setting here told the camera "forest" over an image of a beach.
+        sourceStory ? `The frame we open on is the end of: ${sourceStory}` : "The frame we open on is a contestant mid-shot.",
+        "Read the place out of that frame. Whatever it shows is where this cutaway is.",
         timeline.length ? `Story so far: ${timeline.join(" ")}` : "This is early in the match.",
         `Contestant visible in the frame: ${lead} — ${condition}`,
       ].join("\n"),
@@ -1126,21 +1128,18 @@ async function promptsForDirectorCut({
   participant,
   sourceStory,
   timeline,
-  story,
 }: {
   participant: typeof participants.$inferSelect;
   sourceStory: string;
   timeline: string[];
-  story: StoryState;
 }) {
-  const recap = timeline.length ? `Story so far: ${timeline.join(" ")}` : `Story so far: ${story.goal}, and the contestants are still scattered.`;
+  const recap = timeline.length ? `Story so far: ${timeline.join(" ")}` : "Story so far: the contestants are scattered and still going.";
   const condition = contestantCondition(participant);
-  const expanded = await expandDirectorCut(sourceStory, timeline, participant.display_name, condition, story);
+  const expanded = await expandDirectorCut(sourceStory, timeline, participant.display_name, condition);
   const sharedContinuity = [
     sourceStory
       ? `The opening frame is where ${participant.display_name}'s last shot ended: ${sourceStory}. That beat is over — this cutaway takes place after it.`
-      : `Opening situation: ${participant.display_name} is at ${story.setting}, ${story.clock}.`,
-    `Where the show is now: ${story.setting}, ${story.clock}. Chapter: ${story.phase}. Objective: ${story.goal}.`,
+      : `Opening situation: ${participant.display_name} is mid-shot; the supplied frame is the place.`,
     recap,
     `Physical condition: ${condition}.`,
   ].join("\n");
@@ -1156,7 +1155,7 @@ async function promptsForDirectorCut({
       sharedContinuity,
       "The action in the opening frame has already finished. Do not repeat or re-stage it; move time forward from it.",
       expanded || [
-        "Action: show what the situation looks like now — the terrain, the weather closing in, what is about to become a problem. Not a rerun of the beat that just ended.",
+        "Action: show what the situation looks like now — the terrain, what the weather is doing, what is about to become a problem. Not a rerun of the beat that just ended.",
         // The director line is the show's god's-eye cut, so it opens out of the contestant's own framing.
         "Camera: start on the supplied frame and pull back into a wide establishing broadcast shot that reveals the whole location and where the contestant sits in it, then keep drifting — crane up, arc around, settle on the widest view.",
         PACING_PROMPT,
@@ -1448,7 +1447,6 @@ async function startQueuedGeneration(generation: typeof generations.$inferSelect
       // reading the director channel's own previous clip described a different shot entirely.
       sourceStory: storyTextFromGeneration(sourceClip),
       timeline: await recentVisualMemories(generation.match_id, 3),
-      story,
     })
     : await promptsForViewerInput({
       viewerPrompt: generation.viewer_prompt ?? "",
@@ -1594,10 +1592,10 @@ async function recentSummaries(matchId: number, limit: number) {
 // Used when the writer fails or comes back unusable. Rotating them keeps a bad stretch from
 // reading as the same sentence repeated down the whole timeline.
 const HOLDING_LINES = [
-  "{who} is still holding out in the storm.",
-  "{who} pushes on through the rain, no ground gained yet.",
+  "{who} is still holding out.",
+  "{who} pushes on, no ground gained yet.",
   "The weather has {who} pinned where they are.",
-  "{who} is still on their feet, and that is all the island is giving.",
+  "{who} is still on their feet, and that is all they have.",
 ];
 
 async function summarizeClip(generation: typeof generations.$inferSelect) {
@@ -1624,7 +1622,7 @@ async function summarizeClip(generation: typeof generations.$inferSelect) {
   const timeline = await recentSummaries(generation.match_id, 8).catch(() => [] as string[]);
   const writeSummary = () => miniMaxChat(
       [
-        "You are the commentator on a desert-island survival reality show, tying scattered clips into one continuous story.",
+        "You are the commentator on a survival reality show, tying scattered clips into one continuous story.",
         "From the timeline below and what happens in this clip, write ONE English sentence under 25 words that moves the story on: what someone is doing, what state they are in, or what just turned.",
         "Never describe the filming. No \"shot\", \"camera\", \"frame\", \"cut\", \"close-up\", \"pan\", \"zoom\", \"the director\" — nothing about editing or broadcasting.",
         "Only the people and events inside the story, as if telling a viewer what is happening. Do not repeat what the timeline already said.",
@@ -2072,6 +2070,16 @@ function deviceIdOf(c: { req: { header(name: string): string | undefined } }) {
 // which told everyone at a glance which half of the chat was ours — the bots looked more like people
 // than the people did. Anonymous viewers get a handle in the same register now, drawn from their
 // device id so it is theirs and stays theirs.
+// A channel whose newest clip predates the last relocation is still filming the place the story
+// left. The frame chain is the reason: every clip opens on the last one's final frame, so a story
+// that moves in text moves nowhere on screen — 168 clips running, every one of them opening on a
+// tail frame, while the setting had been inland for twenty chapters. Something has to tell them to
+// walk, and it rides inside the instruction rather than in a section of its own.
+function owesMove(match: typeof matches.$inferSelect, latestClipId: number | null) {
+  if (match.story_reframe_after <= 0) return false;
+  return (latestClipId ?? 0) <= match.story_reframe_after;
+}
+
 const HANDLE_HEADS = [
   "moss", "tin", "salt", "ember", "drift", "husk", "pine", "static", "clove", "rusty",
   "lint", "gull", "brack", "sable", "quiet", "nomad", "vellum", "crow", "fen", "onyx",
@@ -2345,8 +2353,12 @@ async function maybeEchoChat(match: typeof matches.$inferSelect) {
         select body, mentions from chat_messages
         where match_id = ${matchId}
           and length(body) between 4 and 140
+          -- Never draw from replays. They are messages too, so a pool of "the most recent N" filled
+          -- up with them within the hour — 395 of the last 400 — and the room was replaying its own
+          -- replays off a shrinking set of originals. Only things somebody actually wrote count.
+          and device_id not like 'seed:echo:%'
           and body not in (
-            select body from chat_messages where match_id = ${matchId} order by id desc limit 40
+            select body from chat_messages where match_id = ${matchId} order by id desc limit 60
           )
         order by id desc
         limit ${ECHO_POOL_DEPTH}
@@ -2551,7 +2563,15 @@ async function viewerPushSince(matchId: number, since: string | null) {
 async function recentChapters(matchId: number, limit: number) {
   const rows = await db.select({ title: matchEvents.title, detail: matchEvents.detail })
     .from(matchEvents)
-    .where(and(eq(matchEvents.match_id, matchId), eq(matchEvents.kind, "world")))
+    .where(and(
+      eq(matchEvents.match_id, matchId),
+      eq(matchEvents.kind, "world"),
+      // Clip summaries are world events too, and they outnumber chapters roughly eight to one. Read
+      // without this, "the last eight chapters" was seven POV lines and one chapter — so the count
+      // of stretches spent in one place never reached two, the forced move never fired once in
+      // forty-two chapters, and the clock check was reading clip text instead of a chapter's hour.
+      sql`${matchEvents.title} like 'Chapter %'`,
+    ))
     .orderBy(desc(matchEvents.id))
     .limit(limit);
   return rows.reverse();
@@ -2560,22 +2580,57 @@ async function recentChapters(matchId: number, limit: number) {
 // The island, as places a camera can be. Handed to the showrunner when it has to move: asked in the
 // abstract it writes another inch of the rock it is already on, but given ground with names it goes
 // there. Nothing here implies a way off the island.
-const ISLAND_TERRAIN = [
-  "the surf line and the reef beyond it",
-  "a mangrove swamp on brackish water",
-  "a river gorge running fast after rain",
-  "dense jungle interior under closed canopy",
-  "a volcanic slope of loose ash and vents",
-  "the high ridge above the treeline",
-  "a dune field behind the beach",
-  "the wreck they came ashore in",
-  "tidal flats going out for a kilometre",
-  "a waterfall plunge pool in the rocks",
-  "burnt clearing left by an old fire",
-  "sea caves that flood at high tide",
-  "a rotting palm grove full of crabs",
-  "the headland where the wind never stops",
+// Examples, not an inventory. The old list was fourteen island features, which is a cage wearing a
+// menu's clothes: whatever it picked, the show stayed on the same island. These are here to break a
+// stuck run by suggesting a different KIND of place, and the showrunner is free to invent past them.
+const SURVIVAL_GROUND = [
+  "deep forest under closed canopy",
+  "a high ridge above the treeline, thin air and loose scree",
+  "a desert of red rock and dry washes",
+  "an ice field seamed with meltwater",
+  "a cave system running back into the hill",
+  "flooded lowland where the road used to be",
+  "a city block emptied of everyone",
+  "the hulk of a ship aground and listing",
+  "a research station losing power",
+  "a marsh with no solid ground for a kilometre",
+  "burnt forest, ash to the ankle",
+  "a canyon narrowing into slot",
+  "farmland gone feral, fences down",
+  "a mountain pass with weather coming over it",
+  "an underground service tunnel with water rising",
+  "coastline and the reef beyond it",
 ];
+
+
+// Whether a setting is written around water. The show spent forty-two chapters on shorelines,
+// riverbanks and cliffs above surf, and every one of them read as somewhere new while being the
+// same wet rock — so "somewhere else" has to be able to mean "not this again".
+// A coarse read of what kind of ground a setting describes. The showrunner reports "relocated" for
+// itself, and it reported it every single turn while moving fifty metres along the same cliff — so
+// the chapter counter climbed, the show never looked stuck by that measure, and the instruction that
+// forces a real move never once ran. Sameness has to be measured here rather than taken on trust.
+const TERRAIN_KINDS: Array<[string, RegExp]> = [
+  ["water", /shore|coast|beach|ocean|sea\b|surf|wave|tide|tidal|reef|lagoon|estuar/i],
+  ["rock", /cliff|crag|ledge|outcrop|boulder|scree|rockface|ravine|gorge|canyon|quarry/i],
+  ["river", /river|stream|creek|waterfall|rapids|flooded/i],
+  ["forest", /forest|jungle|canopy|woods|grove|thicket|bamboo/i],
+  ["cave", /cave|cavern|tunnel|underground|shaft|sinkhole/i],
+  ["snow", /ice|snow|glacier|frozen|frost/i],
+  ["desert", /desert|dune|sand sea|arid|badland/i],
+  ["marsh", /marsh|swamp|bog|mangrove|wetland/i],
+  ["built", /city|town|building|station|factory|hangar|bunker|road|street|ship|wreck|vessel/i],
+  ["open", /plain|grassland|steppe|meadow|field|savanna|tundra/i],
+];
+
+function terrainKind(text: string) {
+  return TERRAIN_KINDS.find(([, pattern]) => pattern.test(text))?.[0] ?? "other";
+}
+
+function isWaterbound(text: string) {
+  return /shore|coast|beach|ocean|sea\b|surf|wave|tide|tidal|river|stream|waterfall|lagoon|reef|cliff|estuar|creek|flood/i
+    .test(text);
+}
 
 // Which part of the day a clock line describes. Comparing the clock strings themselves does not
 // work: the model rewords it every turn — "the dead calm of midnight" then "dead calm of midnight"
@@ -2604,19 +2659,18 @@ const STORY_TURN_RULES = [
   '"setting": one clause naming where the show is now and what it physically looks like. This is fed to a video model as the location of every shot, so it must be concrete and filmable.',
   '"clock": time of day and which day, e.g. "first light on day two".',
   '"goal": the one thing the contestants are now trying to do, in one clause.',
-  '"directive": one instruction under 25 words that ANY of them could act on right now. Never name a contestant and never assume where one particular person is standing — every one of them is handed this same line, so it has to be what the situation demands of whoever is on camera. A physical action with a complication in it, never a feeling.',
+  '"directive": one instruction under 25 words that ANY of them could act on right now, and that is doable in the "setting" you just named — nothing that needs water, wood, rock or weather the place does not have. A directive about driftwood and rafts while the setting was an inland clearing is how the show stayed on a beach for forty chapters. Never name a contestant and never assume where one particular person is standing — every one of them is handed this same line, so it has to be what the situation demands of whoever is on camera. A physical action with a complication in it, never a feeling.',
   '"tension": integer 0-100, how close this situation is to disaster.',
   `Content: ${SAFE_PERIL_PROMPT}`,
   '"relocated": true only when "setting" is a genuinely different place from the current one.',
-  "THE ONE RULE YOU CANNOT BREAK: this is survival on a remote desert island, and it never becomes anything else.",
-  "- They never get off it. No rescue, no boat away, no aircraft, no radio contact answered, no mainland, no town, no camera crew, no other people arriving. Open water is a wall, not an exit.",
-  "- Nothing supernatural, no monsters, no technology the island would not have. Whatever threatens them is weather, water, terrain, cold, hunger, thirst, wildlife, or the wreckage of what they arrived with.",
-  "- Everything else about where this goes is yours to decide.",
+  "THE ONE RULE YOU CANNOT BREAK: this is a survival show. These people are staying alive against something physical, and the stakes are their lives.",
+  "- That is the whole constraint. Where they are, how they got there and where they go next are entirely yours. They can leave a place for good. They can be rescued into something worse. Wilderness, a wreck, a mountain, a desert, ice, a flood, a city with nobody left in it, a boat, a station, underground — anywhere a person has to survive is on the table.",
+  "- Filmed as documentary realism, because that is what the cameras are: real bodies, real weather, real weight. That constrains how it looks, not where it goes.",
   "Beyond that, write freely:",
-  "- Range across the island. It has a shore, reefs, cliffs, caves, ridges, jungle, a river, mangrove, swamp, burnt ground, a crater, dunes, wreckage — you are not confined to the corner they are standing in.",
-  "- Do not continue the small moment the last clips were on. Hours can pass between turns. Come back to them somewhere else, doing something else, up against a different problem.",
-  "- Vary what the island is doing to them. Consecutive stretches should not all be about the same threat — a squeeze through rock, then a flood, then thirst, then a storm, then something in the water, then having to make fire.",
-  "- Change the pressure too. Not every stretch is a disaster: foraging, building, drying out, patching a raft, watching weather come in and knowing what it means are all good television.",
+  "- The world is not a set with a fixed number of corners. A stretch spent somewhere the show has never been is better than a clever variation on where it already is.",
+  "- Do not continue the small moment the last clips were on. Hours or days can pass between turns. Come back to them somewhere else, doing something else, up against a different problem.",
+  "- Vary what they are up against. Consecutive stretches should not all be the same threat — cold, then thirst, then a climb, then something living, then having to carry someone, then weather closing a route.",
+  "- Change the pressure too. Not every stretch is a disaster: foraging, building, drying out, mending gear, watching the sky and knowing what it means are all good television.",
   "- Time only ever moves forward. Days pass, weather turns, light changes.",
   "- The viewers' lines below are the point of this show. If they asked for something, the next stretch IS that thing — not a nod to it, not a version of it you liked better. Only when the room is silent is the direction yours to choose.",
   "- Everything in English.",
@@ -2649,7 +2703,9 @@ async function advanceStory(match: typeof matches.$inferSelect) {
     // Few enough that the last few beats orient the turn without dictating its size.
     const timeline = await recentSummaries(match.id, 4).catch(() => [] as string[]);
     const chapterRows = await recentChapters(match.id, 8).catch(() => [] as Array<{ title: string; detail: string }>);
-    const chapters = chapterRows.map((row) => row.title);
+    // Title plus the place it was set. Titles alone hid the repetition: five chapters running on
+    // rocky coast read as five different names, so nothing in its own history told it to stop.
+    const chapters = chapterRows.map((row) => `${row.title} — ${cleanText(row.detail, 120)}`);
     // A chapter's detail line opens with its clock, so this counts how long the show has been stuck
     // at one hour of one day. Twenty-four chapters ran without leaving the night of day one, and a
     // storm that never breaks makes every location look like the same wet rock.
@@ -2659,8 +2715,20 @@ async function advanceStory(match: typeof matches.$inferSelect) {
     // Chapters only advance on a real move, so several stretches carrying the same number means the
     // show has been picking at one situation. Asking nicely does not shift it — this does.
     const held = chapters.filter((title) => title.startsWith(`Chapter ${state.chapter} `)).length;
-    const mustMove = held >= 2;
-    const unusedGround = ISLAND_TERRAIN
+    // Two ways to be stuck. Sitting on one chapter is the obvious one. The other is moving every
+    // turn and landing on the same kind of ground each time — five chapters of rocky coast under
+    // five different names, each one reported as a relocation. Both need the same shove.
+    const recentKinds = chapterRows.map((row) => terrainKind(row.detail));
+    const currentKind = terrainKind(state.setting);
+    const sameGroundRun = recentKinds.filter((kind) => kind === currentKind).length;
+    const stuckOnOneKind = sameGroundRun >= 3;
+    const mustMove = held >= 2 || stuckOnOneKind;
+    // Water has held the show for a long stretch if the settings behind it keep coming back to it.
+    const stuckOnWater = chapterRows.filter((row) => isWaterbound(row.detail)).length >= 2;
+    // The kinds it has just used, so "different" can be stated rather than hoped for.
+    const usedKinds = [...new Set([currentKind, ...recentKinds])].filter((kind) => kind !== "other");
+    const unusedGround = SURVIVAL_GROUND
+      .filter((ground) => !stuckOnWater || !isWaterbound(ground))
       .filter((ground) => !chapters.concat(state.setting).some((seen) => seen.toLowerCase().includes(ground.split(" ")[1] ?? ground)));
     const cast = await db.select().from(participants)
       .where(and(eq(participants.match_id, match.id), eq(participants.is_system, true)));
@@ -2674,7 +2742,7 @@ async function advanceStory(match: typeof matches.$inferSelect) {
         `What they are trying to do: ${state.goal}`,
         `Tension now: ${state.tension}/100`,
         chapters.length
-          ? `\nStretches the show has already done, oldest first:\n${chapters.map((line) => `- ${line}`).join("\n")}\nDo not hand back another variation of these. Whatever you choose, it has to be something this list does not already cover.`
+          ? `\nStretches the show has already done, oldest first, with the place each was set:\n${chapters.map((line) => `- ${line}`).join("\n")}\nRead those places, not just the names. If they are all the same kind of ground, the next one must not be a sixth version of it — a different name for the same rocks is not a new stretch.`
           : "",
         timeline.length ? `\nThe last few beats on screen:\n${timeline.map((line, i) => `${i + 1}. ${line}`).join("\n")}\nThese are single ten-second shots. Do not simply continue them — decide where the story goes next, at a far larger size than one shot.` : "\nThe show has only just started.",
         cast.length ? `\nThe contestants: ${cast.map((item) => contestantCondition(item)).join("; ")}` : "",
@@ -2695,9 +2763,18 @@ async function advanceStory(match: typeof matches.$inferSelect) {
           ? [
             "\nTHIS TURN IS A HARD MOVE, and that is not optional.",
             "They have been picking at the same situation for several stretches now. Whatever they were trying to do there is finished or abandoned — say so and leave.",
-            "Hours pass. Put them somewhere else on the island entirely, on ground the chapters above have not used.",
-            (unusedGround.length ? unusedGround : ISLAND_TERRAIN).slice(0, 8).map((ground) => `- ${ground}`).join("\n"),
-            'Pick one of those or somewhere just as different, write it into "setting", give them a new "goal" that belongs to that place, and set "relocated" to true.',
+            "Hours or days pass. Put them somewhere the show has not been — a different kind of place, not a variation on this one. Leaving for good is allowed; so is arriving somewhere that turns out worse.",
+            stuckOnOneKind
+              // Named outright, because "somewhere else" kept being answered with another version
+              // of the same ground: a rocky beach, a rocky inlet, a rocky outcrop, a ledge on the
+              // cliff. Four relocations, one picture.
+              ? `The last stretches have all been the same kind of ground (${usedKinds.join(", ")}). This one must NOT be any of those — not a new name for it, not a different corner of it. Somewhere a viewer would describe with completely different words.`
+              : "",
+            stuckOnWater
+              ? "In particular it must be away from water: no shore, no beach, no river, no waterfall, no cliff above surf."
+              : "",
+            (unusedGround.length ? unusedGround : SURVIVAL_GROUND).slice(0, 8).map((ground) => `- ${ground}`).join("\n"),
+            'Those are examples, not a list to choose from — somewhere you invent is better. Write it into "setting", give them a new "goal" that belongs to that place, and set "relocated" to true.',
           ].join("\n")
           : "",
       ].filter(Boolean).join("\n"),
@@ -2835,7 +2912,13 @@ async function maybeAdvanceHouseCast(match: typeof matches.$inferSelect) {
         videoPrompt: "",
         visualMemory: "",
         duration: LIVE_VIDEO_DURATION_SECONDS,
-        viewerPrompt: cue ? cue.body : match.story_directive,
+        // A viewer's line is theirs untouched. The show's own line carries the walk when this
+        // channel has not made it to the new place yet — one clip, then it films there like the rest.
+        viewerPrompt: cue
+          ? cue.body
+          : owesMove(match, lastClip.get(next.id) ?? null)
+          ? `Leave where you are and travel on camera to ${match.story_setting}. Arrive there by the end. ${match.story_directive}`
+          : match.story_directive,
       }, cue ? "house:chat" : "house:auto");
     } catch (error) {
       if (cue) await releaseChatCue(cue.id);
@@ -3077,6 +3160,28 @@ async function buildLiveShared(match: LiveMatchRow) {
     ))
     : [];
   const clipList = [...clips, ...referencedClips].map(clipPayload);
+  // How much footage each line actually holds. Counting the clips in the payload gave whatever fell
+  // inside the recent window — sixty across five channels, so every contestant read as about a
+  // dozen when they had hundreds. Grouped once here, and shared like everything else on this path.
+  const clipTallies = await db.select({
+    channel: generations.channel,
+    participantId: generations.channel_participant_id,
+    total: sql<number>`count(*)`,
+  }).from(generations)
+    .where(and(
+      eq(generations.match_id, match.id),
+      eq(generations.stage, "completed"),
+      isNotNull(generations.result_url),
+    ))
+    .groupBy(generations.channel, generations.channel_participant_id);
+  const clipCounts = {
+    director: clipTallies
+      .filter((row) => row.channel === "director")
+      .reduce((total, row) => total + Number(row.total), 0),
+    participants: Object.fromEntries(clipTallies
+      .filter((row) => row.channel === "participant" && row.participantId != null)
+      .map((row) => [String(row.participantId), Number(row.total)])),
+  };
   const pendingList = pendingGenerations.map((item) => ({
     id: item.id,
     stage: item.stage,
@@ -3098,6 +3203,7 @@ async function buildLiveShared(match: LiveMatchRow) {
       participants: rosterWithUrls,
       events,
       clips: clipList,
+      clip_counts: clipCounts,
       story_choices: storyChoices,
       pending_generation: pendingList[0] ?? null,
       pending_generations: pendingList,

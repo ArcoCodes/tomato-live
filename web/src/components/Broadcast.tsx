@@ -526,7 +526,10 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
           {clip?.summary && firstFrameShown ? (
             <div className="broadcast-subtitle">
               <span>
-                {activeChannel === "director" ? "LIVE COMMENTARY" : "FIELD LOG"}
+                {/* The word carried the whole broadcast claim as plain text among the others. As a
+                    badge it reads before anything is read at all. */}
+                <b className="live-badge"><i />LIVE</b>
+                {activeChannel === "director" ? "COMMENTARY" : "FIELD LOG"}
                 <time>{clipClock(clip.created_at)}</time>
               </span>
               <p>{clip.summary}</p>

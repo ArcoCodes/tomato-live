@@ -86,6 +86,8 @@ export interface LiveData {
   events: MatchEvent[];
   clips: BroadcastClip[];
   story_choices: StoryChoice[];
+  /** Completed clips per line, counted across the whole match rather than the recent window. */
+  clip_counts: { director: number; participants: Record<string, number> };
   chat: ChatMessage[];
   chat_waiting: number;
   chat_allowance: ChatAllowance | null;
