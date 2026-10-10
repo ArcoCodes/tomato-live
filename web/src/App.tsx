@@ -4,6 +4,7 @@ import { Broadcast, type ChannelTab } from "@/components/Broadcast";
 import { DirectorDialog } from "@/components/DirectorDialog";
 import { JoinDialog } from "@/components/JoinDialog";
 import { ChatRoom } from "@/components/ChatRoom";
+import { PromptDialog } from "@/components/PromptDialog";
 import { LoginDialog } from "@/components/LoginDialog";
 import { ViewerCount } from "@/components/ViewerCount";
 import { useAuth } from "@/hooks/useAuth";
@@ -342,6 +343,7 @@ function App() {
     { clips: [], cursor: null, done: false },
   );
   const [archiveLoading, setArchiveLoading] = useState(false);
+  const [promptClipId, setPromptClipId] = useState<number | null>(null);
   // Each channel has its own history, so switching away discards what was loaded for the last one.
   useEffect(() => {
     setArchive({ clips: [], cursor: null, done: false });
@@ -540,6 +542,7 @@ function App() {
           moreOlder={!archive.done}
           loadingOlder={archiveLoading}
           onLoadOlder={loadOlderClips}
+          onShowPrompt={setPromptClipId}
         />
         <ChatRoom
           messages={live.chat ?? []}
@@ -588,6 +591,7 @@ function App() {
       </footer>
 
       <LoginDialog open={loginOpen} onClose={() => setLoginOpen(false)} />
+      {promptClipId != null ? <PromptDialog clipId={promptClipId} onClose={() => setPromptClipId(null)} /> : null}
       {toast ? <div className="app-toast" role="status">{toast}</div> : null}
 
       <JoinDialog open={joinOpen} onClose={() => setJoinOpen(false)} onJoined={(next) => { addControl(next); void refresh(true); }} />

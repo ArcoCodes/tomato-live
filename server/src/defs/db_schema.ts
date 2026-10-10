@@ -233,6 +233,14 @@ export const chatMessages = sqliteTable("chat_messages", {
 // thing every isolate can agree on is a row: whoever writes `key` inside its window owns the work
 // until `until_ms` passes. In-memory gates cannot do this — they are per isolate, and a hundred
 // browsers spread over a dozen PoPs each got their own.
+// Clips the host picked out while scanning the archive. Nothing about the clip itself changes — a
+// favourite is a note kept beside it, so unpicking one leaves no trace on the footage.
+export const clipFavourites = sqliteTable("clip_favourites", {
+  generation_id: integer("generation_id").primaryKey().references(() => generations.id),
+  note: text("note"),
+  created_at: text("created_at").notNull().default(sql`(current_timestamp)`),
+});
+
 export const runtimeLeases = sqliteTable("runtime_leases", {
   key: text("key").primaryKey(),
   holder: text("holder").notNull(),

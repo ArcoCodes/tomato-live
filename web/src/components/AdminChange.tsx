@@ -359,6 +359,8 @@ export function AdminChange() {
             ) : null}
           </section>
 
+          <ClipArchive />
+
           {note ? <p className="admin-note">{note}</p> : null}
           {state.houseUsed >= state.houseLimit ? (
             <p className="admin-warn">The cast line has hit its cumulative cap, so no tier will produce anything further. Raising HOUSE_CAST_MAX_CLIPS on the server is what restarts it.</p>
@@ -368,5 +370,188 @@ export function AdminChange() {
 
       <LoginDialog open={loginOpen} onClose={() => { setLoginOpen(false); void load(); }} />
     </div>
+  );
+}
+
+
+interface AdminClip {
+  id: number;
+  channel: string;
+  stage: string;
+  created_by: string;
+  created_at: string;
+  summary: string | null;
+  error_message: string | null;
+  cast: string[];
+  instruction: string | null;
+  asked_by: string | null;
+  opening_frame: string | null;
+  prompt: string | null;
+  thumbnail_url: string | null;
+  result_url: string | null;
+  favourite: boolean;
+}
+
+const CLIP_SOURCES = [
+  { key: "", label: "All" },
+  { key: "chat", label: "Asked for" },
+  { key: "auto", label: "Show's own" },
+  { key: "director", label: "Director" },
+  { key: "starred", label: "★ Kept" },
+];
+
+/**
+ * A contact sheet, not a list. Finding something worth keeping in thousands of ten-second clips is
+ * scanning, and scanning needs pictures at a size the eye can judge — a 42px thumbnail beside a
+ * paragraph is a reading layout, and reading four thousand rows is not a thing anyone will do.
+ * Hovering plays the clip muted, which is the whole trick: it turns "open it to find out" into
+ * "sweep the mouse across the page".
+ */
+function ClipArchive() {
+  const [clips, setClips] = useState<AdminClip[]>([]);
+  const [cursor, setCursor] = useState<number | null>(null);
+  const [done, setDone] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [source, setSource] = useState("");
+  const [open, setOpen] = useState<AdminClip | null>(null);
+  const [hover, setHover] = useState<number | null>(null);
+
+  async function loadPage(from: number | null, forSource: string, replace = false) {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ limit: "24" });
+      if (from != null) params.set("before", String(from));
+      if (forSource) params.set("source", forSource);
+      const response = await fetch(`/api/admin/clips?${params.toString()}`);
+      if (!response.ok) throw new Error("clip page failed");
+      const data = await response.json() as { clips: AdminClip[]; next_cursor: number | null };
+      setClips((current) => {
+        const base = replace ? [] : current;
+        const held = new Set(base.map((item) => item.id));
+        return [...base, ...data.clips.filter((item) => !held.has(item.id))];
+      });
+      setCursor(data.next_cursor);
+      setDone(data.next_cursor == null);
+    } catch {
+      setDone(true);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Refetches from the top whenever the filter changes; the cursor belongs to the old filter.
+  async function toggleFavourite(clip: AdminClip) {
+    const next = !clip.favourite;
+    // Flipped first so the grid answers the click immediately; put back if the write fails.
+    setClips((current) => current.map((item) => (item.id === clip.id ? { ...item, favourite: next } : item)));
+    try {
+      const response = await fetch(`/api/admin/clips/${clip.id}/favourite`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ favourite: next }),
+      });
+      if (!response.ok) throw new Error("favourite failed");
+    } catch {
+      setClips((current) => current.map((item) => (item.id === clip.id ? { ...item, favourite: clip.favourite } : item)));
+    }
+  }
+
+  useEffect(() => {
+    setClips([]);
+    setCursor(null);
+    setDone(false);
+    void loadPage(null, source, true);
+  }, [source]);
+
+  return (
+    <section className="admin-board">
+      <div className="admin-clips-top">
+        <h2>Every clip</h2>
+        <div className="admin-filters">
+          {CLIP_SOURCES.map((item) => (
+            <button
+              type="button"
+              key={item.key || "all"}
+              className={item.key === source ? "is-on" : ""}
+              onClick={() => setSource(item.key)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="admin-grid">
+        {clips.map((clip) => (
+          // Wrapped, because the cell is a button and the star cannot live inside another button.
+          <div
+            className="admin-cell-slot"
+            key={clip.id}
+            onMouseEnter={() => setHover(clip.id)}
+            onMouseLeave={() => setHover((at) => (at === clip.id ? null : at))}
+          >
+          <button
+            type="button"
+            className="admin-cell"
+            onClick={() => setOpen(clip)}
+            title={clip.instruction ?? clip.summary ?? undefined}
+          >
+            {/* preload="none" so a page of twenty-four downloads nothing until a mouse arrives. */}
+            {hover === clip.id && clip.result_url
+              ? <video src={clip.result_url} autoPlay muted loop playsInline preload="none" />
+              : clip.thumbnail_url
+              ? <img src={clip.thumbnail_url} alt="" loading="lazy" />
+              : <i />}
+            <span className="admin-cell-tag">
+              {clip.created_by === "house:chat" ? "ASKED" : clip.channel === "director" ? "CUT" : "AUTO"}
+            </span>
+            <span className="admin-cell-foot">#{clip.id} · {clip.cast.join(", ")}</span>
+          </button>
+          {/* Marked without leaving the grid: picking things out is a sweep, and a dialog per clip
+              would turn a hundred judgements into a hundred round trips. */}
+          <button
+            type="button"
+            className={clip.favourite ? "admin-star is-on" : "admin-star"}
+            aria-label={clip.favourite ? "Remove from kept" : "Keep this clip"}
+            onClick={() => void toggleFavourite(clip)}
+          >
+            {clip.favourite ? "★" : "☆"}
+          </button>
+          </div>
+        ))}
+      </div>
+
+      {!done ? (
+        <button type="button" className="admin-more" disabled={loading} onClick={() => void loadPage(cursor, source)}>
+          {loading ? "Loading…" : "Load 24 more"}
+        </button>
+      ) : <p className="admin-clips-end">{clips.length ? "That is every clip." : "Nothing matches that filter."}</p>}
+
+      {open ? (
+        <div className="prompt-backdrop" onClick={() => setOpen(null)} role="presentation">
+          <div className="prompt-dialog admin-review" onClick={(event) => event.stopPropagation()} role="dialog" aria-label="Clip review">
+            <div className="prompt-head">
+              <span className="eyebrow">#{open.id} · {open.channel} · {open.created_by}</span>
+              <button type="button" className="prompt-close" onClick={() => setOpen(null)} aria-label="Close">✕</button>
+            </div>
+            {open.result_url ? <video className="admin-review-video" src={open.result_url} controls autoPlay playsInline /> : null}
+            <div className="prompt-block is-lead">
+              <span className="eyebrow">
+                {open.asked_by ? `ASKED FOR BY ${open.asked_by.toUpperCase()}` : "THE SHOW'S OWN CUE"}
+              </span>
+              <p>{open.instruction ?? open.summary ?? "(director cut)"}</p>
+            </div>
+            {open.summary && open.instruction ? (
+              <div className="prompt-block"><span className="eyebrow">WHAT HAPPENED</span><p>{open.summary}</p></div>
+            ) : null}
+            <div className="prompt-block">
+              <span className="eyebrow">SENT TO THE MODEL</span>
+              <pre>{open.prompt ?? "This clip predates prompt capture."}</pre>
+            </div>
+            <p className="prompt-foot">{open.cast.join(", ")} · {open.created_at}</p>
+          </div>
+        </div>
+      ) : null}
+    </section>
   );
 }

@@ -2,7 +2,7 @@ import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, ne, or, sql } f
 import { Hono } from "hono";
 import { ctx, db, secret, storage, vars } from "edgespark";
 import { auth } from "edgespark/http";
-import { buckets, characterDrafts, chatMessages, generations, matchEvents, matches, participants, runtimeLeases, viewerPerks, viewerPresence } from "@defs";
+import { buckets, characterDrafts, chatMessages, clipFavourites, generations, matchEvents, matches, participants, runtimeLeases, viewerPerks, viewerPresence } from "@defs";
 
 const LIVE_SLUG = "island-zero";
 const RENOISE_DEFAULT_BASE_URL = "https://www.renoise.ai/api/public/v1";
@@ -2580,58 +2580,6 @@ async function recentChapters(matchId: number, limit: number) {
 // The island, as places a camera can be. Handed to the showrunner when it has to move: asked in the
 // abstract it writes another inch of the rock it is already on, but given ground with names it goes
 // there. Nothing here implies a way off the island.
-// Examples, not an inventory. The old list was fourteen island features, which is a cage wearing a
-// menu's clothes: whatever it picked, the show stayed on the same island. These are here to break a
-// stuck run by suggesting a different KIND of place, and the showrunner is free to invent past them.
-const SURVIVAL_GROUND = [
-  "deep forest under closed canopy",
-  "a high ridge above the treeline, thin air and loose scree",
-  "a desert of red rock and dry washes",
-  "an ice field seamed with meltwater",
-  "a cave system running back into the hill",
-  "flooded lowland where the road used to be",
-  "a city block emptied of everyone",
-  "the hulk of a ship aground and listing",
-  "a research station losing power",
-  "a marsh with no solid ground for a kilometre",
-  "burnt forest, ash to the ankle",
-  "a canyon narrowing into slot",
-  "farmland gone feral, fences down",
-  "a mountain pass with weather coming over it",
-  "an underground service tunnel with water rising",
-  "coastline and the reef beyond it",
-];
-
-
-// Whether a setting is written around water. The show spent forty-two chapters on shorelines,
-// riverbanks and cliffs above surf, and every one of them read as somewhere new while being the
-// same wet rock — so "somewhere else" has to be able to mean "not this again".
-// A coarse read of what kind of ground a setting describes. The showrunner reports "relocated" for
-// itself, and it reported it every single turn while moving fifty metres along the same cliff — so
-// the chapter counter climbed, the show never looked stuck by that measure, and the instruction that
-// forces a real move never once ran. Sameness has to be measured here rather than taken on trust.
-const TERRAIN_KINDS: Array<[string, RegExp]> = [
-  ["water", /shore|coast|beach|ocean|sea\b|surf|wave|tide|tidal|reef|lagoon|estuar/i],
-  ["rock", /cliff|crag|ledge|outcrop|boulder|scree|rockface|ravine|gorge|canyon|quarry/i],
-  ["river", /river|stream|creek|waterfall|rapids|flooded/i],
-  ["forest", /forest|jungle|canopy|woods|grove|thicket|bamboo/i],
-  ["cave", /cave|cavern|tunnel|underground|shaft|sinkhole/i],
-  ["snow", /ice|snow|glacier|frozen|frost/i],
-  ["desert", /desert|dune|sand sea|arid|badland/i],
-  ["marsh", /marsh|swamp|bog|mangrove|wetland/i],
-  ["built", /city|town|building|station|factory|hangar|bunker|road|street|ship|wreck|vessel/i],
-  ["open", /plain|grassland|steppe|meadow|field|savanna|tundra/i],
-];
-
-function terrainKind(text: string) {
-  return TERRAIN_KINDS.find(([, pattern]) => pattern.test(text))?.[0] ?? "other";
-}
-
-function isWaterbound(text: string) {
-  return /shore|coast|beach|ocean|sea\b|surf|wave|tide|tidal|river|stream|waterfall|lagoon|reef|cliff|estuar|creek|flood/i
-    .test(text);
-}
-
 // Which part of the day a clock line describes. Comparing the clock strings themselves does not
 // work: the model rewords it every turn — "the dead calm of midnight" then "dead calm of midnight"
 // — so an exact match reads two identical nights as a change and the show never sees a sunrise.
@@ -2659,7 +2607,7 @@ const STORY_TURN_RULES = [
   '"setting": one clause naming where the show is now and what it physically looks like. This is fed to a video model as the location of every shot, so it must be concrete and filmable.',
   '"clock": time of day and which day, e.g. "first light on day two".',
   '"goal": the one thing the contestants are now trying to do, in one clause.',
-  '"directive": one instruction under 25 words that ANY of them could act on right now, and that is doable in the "setting" you just named — nothing that needs water, wood, rock or weather the place does not have. A directive about driftwood and rafts while the setting was an inland clearing is how the show stayed on a beach for forty chapters. Never name a contestant and never assume where one particular person is standing — every one of them is handed this same line, so it has to be what the situation demands of whoever is on camera. A physical action with a complication in it, never a feeling.',
+  '"directives": FIVE different instructions, each under 25 words, each doable in the "setting" you just named. Every self-driven clip of this stretch films one of these, so five identical-sounding lines means five identical clips — one viewer watched the same search for handholds eight times running. Make them five different ACTIONS: one about moving, one about building or carrying, one about food or water, one about something going wrong, one about looking or listening. Not five phrasings of the same thing. Never name a contestant. Never name a contestant and never assume where one particular person is standing — every one of them is handed this same line, so it has to be what the situation demands of whoever is on camera. A physical action with a complication in it, never a feeling.',
   '"tension": integer 0-100, how close this situation is to disaster.',
   `Content: ${SAFE_PERIL_PROMPT}`,
   '"relocated": true only when "setting" is a genuinely different place from the current one.',
@@ -2715,21 +2663,7 @@ async function advanceStory(match: typeof matches.$inferSelect) {
     // Chapters only advance on a real move, so several stretches carrying the same number means the
     // show has been picking at one situation. Asking nicely does not shift it — this does.
     const held = chapters.filter((title) => title.startsWith(`Chapter ${state.chapter} `)).length;
-    // Two ways to be stuck. Sitting on one chapter is the obvious one. The other is moving every
-    // turn and landing on the same kind of ground each time — five chapters of rocky coast under
-    // five different names, each one reported as a relocation. Both need the same shove.
-    const recentKinds = chapterRows.map((row) => terrainKind(row.detail));
-    const currentKind = terrainKind(state.setting);
-    const sameGroundRun = recentKinds.filter((kind) => kind === currentKind).length;
-    const stuckOnOneKind = sameGroundRun >= 3;
-    const mustMove = held >= 2 || stuckOnOneKind;
-    // Water has held the show for a long stretch if the settings behind it keep coming back to it.
-    const stuckOnWater = chapterRows.filter((row) => isWaterbound(row.detail)).length >= 2;
-    // The kinds it has just used, so "different" can be stated rather than hoped for.
-    const usedKinds = [...new Set([currentKind, ...recentKinds])].filter((kind) => kind !== "other");
-    const unusedGround = SURVIVAL_GROUND
-      .filter((ground) => !stuckOnWater || !isWaterbound(ground))
-      .filter((ground) => !chapters.concat(state.setting).some((seen) => seen.toLowerCase().includes(ground.split(" ")[1] ?? ground)));
+    const mustMove = held >= 2;
     const cast = await db.select().from(participants)
       .where(and(eq(participants.match_id, match.id), eq(participants.is_system, true)));
 
@@ -2764,17 +2698,11 @@ async function advanceStory(match: typeof matches.$inferSelect) {
             "\nTHIS TURN IS A HARD MOVE, and that is not optional.",
             "They have been picking at the same situation for several stretches now. Whatever they were trying to do there is finished or abandoned — say so and leave.",
             "Hours or days pass. Put them somewhere the show has not been — a different kind of place, not a variation on this one. Leaving for good is allowed; so is arriving somewhere that turns out worse.",
-            stuckOnOneKind
-              // Named outright, because "somewhere else" kept being answered with another version
-              // of the same ground: a rocky beach, a rocky inlet, a rocky outcrop, a ledge on the
-              // cliff. Four relocations, one picture.
-              ? `The last stretches have all been the same kind of ground (${usedKinds.join(", ")}). This one must NOT be any of those — not a new name for it, not a different corner of it. Somewhere a viewer would describe with completely different words.`
-              : "",
-            stuckOnWater
-              ? "In particular it must be away from water: no shore, no beach, no river, no waterfall, no cliff above surf."
-              : "",
-            (unusedGround.length ? unusedGround : SURVIVAL_GROUND).slice(0, 8).map((ground) => `- ${ground}`).join("\n"),
-            'Those are examples, not a list to choose from — somewhere you invent is better. Write it into "setting", give them a new "goal" that belongs to that place, and set "relocated" to true.',
+            // No list of approved scenery. Handing over a menu of places was answering "the story
+            // repeats itself" with a smaller cage; the places above are the only thing it needs to
+            // avoid, and anywhere a person has to survive is fair.
+            "Read the places in that history. The new one must not be another version of any of them — not a new name for the same ground, not a different corner of it. Somewhere a viewer would describe in completely different words.",
+            'Write it into "setting", give them a "goal" that belongs to that place, and set "relocated" to true.',
           ].join("\n")
           : "",
       ].filter(Boolean).join("\n"),
@@ -2790,7 +2718,13 @@ async function advanceStory(match: typeof matches.$inferSelect) {
     }
     const setting = cleanText(next.setting, 260);
     const phase = cleanText(next.phase, 60);
-    const directive = cleanText(next.directive, 240);
+    // Five lines held as one field, newline separated. A single directive per chapter meant every
+    // self-driven clip in it filmed the same sentence — eight consecutive clips of one man feeling
+    // for handholds, which reads as the show being stuck even while the setting moves under it.
+    const written = Array.isArray(next.directives)
+      ? next.directives.map((line) => cleanText(line, 240)).filter(Boolean)
+      : [cleanText(next.directive, 240)].filter(Boolean);
+    const directive = written.join("\n");
     // A turn without a place and an instruction is worse than no turn: the beat counter would reset
     // and the show would coast on the old constants for another full stretch.
     if (!setting || !phase || !directive) {
@@ -2852,6 +2786,14 @@ async function advanceStory(match: typeof matches.$inferSelect) {
   }
 }
 
+
+// One of the stretch's beats, chosen fresh each time. Reading the field whole would put the same
+// sentence in every clip of the chapter, which is exactly what it used to do.
+function pickDirective(match: typeof matches.$inferSelect) {
+  const lines = match.story_directive.split("\n").map((line) => line.trim()).filter(Boolean);
+  if (lines.length <= 1) return match.story_directive;
+  return lines[Math.floor(Math.random() * lines.length)];
+}
 
 async function maybeAdvanceHouseCast(match: typeof matches.$inferSelect) {
   const matchId = match.id;
@@ -2917,8 +2859,8 @@ async function maybeAdvanceHouseCast(match: typeof matches.$inferSelect) {
         viewerPrompt: cue
           ? cue.body
           : owesMove(match, lastClip.get(next.id) ?? null)
-          ? `Leave where you are and travel on camera to ${match.story_setting}. Arrive there by the end. ${match.story_directive}`
-          : match.story_directive,
+          ? `Leave where you are and travel on camera to ${match.story_setting}. Arrive there by the end. ${pickDirective(match)}`
+          : pickDirective(match),
       }, cue ? "house:chat" : "house:auto");
     } catch (error) {
       if (cue) await releaseChatCue(cue.id);
@@ -3440,6 +3382,98 @@ const app = new Hono()
       },
     });
   })
+  // Every clip the show has filmed, with what made it, a page at a time. The host's other views
+  // sample the recent window; this one is the whole archive.
+  .get("/api/admin/clips", async (c) => {
+    if (!isHostAccount()) return c.json({ error: "This account has no host permission" }, 403);
+    const match = await ensureLiveMatch();
+    const before = Number(c.req.query("before"));
+    const limit = Math.min(Math.max(Number(c.req.query("limit")) || 24, 1), 60);
+    // Scanning an archive for something worth keeping means narrowing it first. "Asked for" is the
+    // one most worth having: those are clips a person wanted, not ones the show filled in.
+    const source = cleanText(c.req.query("source"), 20);
+    const sourceFilter = source === "chat" ? eq(generations.created_by, "house:chat")
+      : source === "director" ? eq(generations.channel, "director" as const)
+      : source === "auto" ? eq(generations.created_by, "house:auto")
+      : source === "starred" ? inArray(
+        generations.id,
+        db.select({ id: clipFavourites.generation_id }).from(clipFavourites),
+      )
+      : undefined;
+    const rows = await db.select().from(generations)
+      .where(and(
+        eq(generations.match_id, match.id),
+        // A review grid is for watching, so unfinished rows have nothing to show.
+        eq(generations.stage, "completed"),
+        isNotNull(generations.result_url),
+        sourceFilter,
+        Number.isInteger(before) && before > 0 ? lt(generations.id, before) : undefined,
+      ))
+      .orderBy(desc(generations.id))
+      .limit(limit + 1);
+
+    const page = rows.slice(0, limit);
+    const nameOf = new Map((await db.select({ id: participants.id, display_name: participants.display_name })
+      .from(participants).where(eq(participants.match_id, match.id)))
+      .map((row) => [row.id, row.display_name]));
+    const askers = new Map((await db.select({ gen: chatMessages.generation_id, name: chatMessages.display_name })
+      .from(chatMessages)
+      .where(inArray(chatMessages.generation_id, page.map((row) => row.id))))
+      .filter((row) => row.gen != null)
+      .map((row) => [row.gen as number, row.name]));
+    const starred = new Set((await db.select({ id: clipFavourites.generation_id }).from(clipFavourites)
+      .where(inArray(clipFavourites.generation_id, page.map((row) => row.id))))
+      .map((row) => row.id));
+
+    return c.json({
+      clips: page.map((clip) => {
+        const stored = (() => {
+          try {
+            return asObject(JSON.parse(clip.prompt || "{}"));
+          } catch {
+            return {} as JsonObject;
+          }
+        })();
+        return {
+          id: clip.id,
+          channel: clip.channel,
+          stage: clip.stage,
+          created_by: clip.created_by,
+          created_at: clip.created_at,
+          summary: clip.summary,
+          error_message: clip.error_message,
+          cast: parseParticipantIds(clip.participant_ids).map((id) => nameOf.get(id) ?? `#${id}`),
+          instruction: clip.viewer_prompt,
+          asked_by: askers.get(clip.id) ?? null,
+          favourite: starred.has(clip.id),
+          opening_frame: cleanText(stored.openingFrameSource, 40) || null,
+          prompt: cleanText(stored.taskPrompt, 8000) || null,
+          thumbnail_url: clip.thumbnail_url ? `/api/public/clips/${clip.id}/thumbnail` : null,
+          // The public bucket address where there is one, so review plays off the CDN like the
+          // broadcast does rather than pulling every clip back through the Worker.
+          result_url: clip.result_url
+            ? publicMediaUrl(clip.result_url) ?? `/api/public/clips/${clip.id}/video`
+            : null,
+        };
+      }),
+      next_cursor: rows.length > limit && page.length ? page[page.length - 1].id : null,
+    });
+  })
+  // Keeping one, or letting it go. Idempotent both ways: the grid sends the state it wants rather
+  // than a toggle, so a double click cannot leave the star out of step with the row.
+  .post("/api/admin/clips/:id/favourite", async (c) => {
+    if (!isHostAccount()) return c.json({ error: "This account has no host permission" }, 403);
+    const id = Number(c.req.param("id"));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ error: "Invalid clip id" }, 400);
+    const data = asObject(await c.req.json().catch(() => ({})));
+    const keep = data.favourite !== false;
+    if (keep) {
+      await db.insert(clipFavourites).values({ generation_id: id }).onConflictDoNothing();
+    } else {
+      await db.delete(clipFavourites).where(eq(clipFavourites.generation_id, id));
+    }
+    return c.json({ id, favourite: keep });
+  })
   .post("/api/admin/chat-seed-tier", async (c) => {
     if (!isHostAccount()) return c.json({ error: "This account has no host permission" }, 403);
     const data = asObject(await c.req.json().catch(() => ({})));
@@ -3638,6 +3672,42 @@ const app = new Hono()
     return c.json({
       clips: page.map(clipPayload),
       next_cursor: rows.length > limit && page.length ? page[page.length - 1].id : null,
+    });
+  })
+  // What made this clip. Viewers watch a line they wrote turn into footage, and the step between
+  // the two was the one part of the show nobody could see.
+  .get("/api/public/clips/:id/prompt", async (c) => {
+    const id = Number(c.req.param("id"));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ error: "Invalid clip id" }, 400);
+    const [clip] = await db.select().from(generations).where(eq(generations.id, id)).limit(1);
+    if (!clip || clip.stage !== "completed") return c.json({ error: "No such clip" }, 404);
+
+    const stored = (() => {
+      try {
+        return asObject(JSON.parse(clip.prompt || "{}"));
+      } catch {
+        return {} as JsonObject;
+      }
+    })();
+    // Whoever asked for it, when a line in the room did.
+    const [asker] = await db.select({ name: chatMessages.display_name, body: chatMessages.body })
+      .from(chatMessages).where(eq(chatMessages.generation_id, id)).limit(1);
+    const cast = await db.select({ id: participants.id, display_name: participants.display_name })
+      .from(participants)
+      .where(inArray(participants.id, parseParticipantIds(clip.participant_ids)));
+
+    return c.json({
+      id: clip.id,
+      channel: clip.channel,
+      created_at: clip.created_at,
+      duration_seconds: clip.duration_seconds,
+      summary: clip.summary,
+      cast: cast.map((item) => item.display_name),
+      // A director cut has no instruction of its own, and a house clip's is the show's own line.
+      instruction: clip.viewer_prompt,
+      asked_by: asker?.name ?? null,
+      // The prompt as the model received it, assembled from every part.
+      prompt: cleanText(stored.taskPrompt, 8000) || null,
     });
   })
   .get("/api/public/clips/:id/video", async (c) => {

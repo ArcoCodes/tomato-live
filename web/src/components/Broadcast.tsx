@@ -63,7 +63,7 @@ export interface ChannelTab {
   isMark?: boolean;
 }
 
-export function Broadcast({ clips, participants, channels, activeChannel, onSelectChannel, jumpRequest, onJumpHandled, archiveOpen, olderClips = [], moreOlder = false, loadingOlder = false, onLoadOlder }: {
+export function Broadcast({ clips, participants, channels, activeChannel, onSelectChannel, jumpRequest, onJumpHandled, archiveOpen, olderClips = [], moreOlder = false, loadingOlder = false, onLoadOlder, onShowPrompt }: {
   clips: BroadcastClip[];
   /** Needed to show whose clip each archive card is, by character sheet rather than by name. */
   participants: Participant[];
@@ -80,6 +80,8 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
   moreOlder?: boolean;
   loadingOlder?: boolean;
   onLoadOlder?: () => void;
+  /** Opens the prompt behind one clip. */
+  onShowPrompt?: (id: number) => void;
 }) {
   // Loaded history belongs here, not only in the strip below. Kept out of this list, the archive
   // rendered cards the player could not find: a click set the queued id, the lookup came back empty
@@ -585,8 +587,9 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
         ) : null}
         <div className="clip-history-track" ref={archiveRef}>
           {history.length ? history.map((item) => (
+            // A wrapper, because the card is itself a button and a button cannot hold another one.
+            <span className="clip-slot" key={item.id}>
             <button
-              key={item.id}
               className={item.id === (queuedClipId ?? currentClipId) ? "active" : ""}
               title={item.summary ?? undefined}
               onClick={() => jumpToClip(item.id)}
@@ -621,6 +624,19 @@ export function Broadcast({ clips, participants, channels, activeChannel, onSele
                 <small>{item.duration_seconds}s</small>
               </span>
             </button>
+            {/* The step between a line someone wrote and the footage it became was the one part of
+                the show nobody could see. */}
+            <button
+              type="button"
+              className="clip-prompt-open"
+              title="What made this clip"
+              aria-label="Show the prompt for this clip"
+              onClick={() => onShowPrompt?.(item.id)}
+            >
+              <svg viewBox="0 0 24 24" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round"><path d="M4 6h16M4 12h11M4 18h7" /></svg>
+              PROMPT
+            </button>
+            </span>
           )) : <p>Once the first clip is filmed, the archive shows up here.</p>}
           {history.length && (moreOlder || loadingOlder) ? (
             <button
