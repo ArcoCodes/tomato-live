@@ -43,6 +43,10 @@
   </head>
   <body>
     <div id="root"></div>
+    <!-- Outside #root on purpose: it ships in the served HTML and stays whether or not the live feed
+         loads. The header offer link only renders once the feed does, and a crawl that caught the
+         page without it recorded the renoise.ai link as removed. -->
+    <p class="site-credit">Every clip on Renoise Live is generated with <a href="https://renoise.ai/?utm_medium=renoiselive&amp;utm_source=tomato-renoise-live&amp;utm_content=site-credit">Renoise</a>, the AI video and image studio.</p>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
